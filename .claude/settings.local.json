@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/HOME-JMT/Documents/GitHub/VirtualTour -type f \\\\\\( -name \"package.json\" -o -name \".gitignore\" -o -name \"README*\" \\\\\\) -exec ls -lh {} \\\\;)",
+      "Bash(node -e ':*)",
+      "Bash(read id:*)"
+    ]
+  }
+}
