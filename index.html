@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Visite Virtuelle</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Pannellum (360° viewer) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ======= TOP BAR ======= -->
+<header id="topbar">
+  <span id="app-title">Visite Virtuelle</span>
+  <div id="topbar-actions">
+    <button id="btn-new-site" class="btn-primary">+ Nouveau site</button>
+    <button id="btn-load-site" class="btn-secondary">Charger site</button>
+    <button id="btn-save-site" class="btn-secondary" disabled>Sauvegarder</button>
+    <button id="btn-export-site" class="btn-secondary" disabled>Exporter JSON</button>
+  </div>
+</header>
+
+<!-- ======= MAIN LAYOUT ======= -->
+<div id="main-layout">
+
+  <!-- LEFT SIDEBAR: site tree + floor manager -->
+  <aside id="sidebar">
+
+    <div id="site-info" class="sidebar-section hidden">
+      <div class="section-title">Site</div>
+      <input id="site-name-input" type="text" placeholder="Nom du site" class="input-field" />
+    </div>
+
+    <!-- Floor plan manager -->
+    <div id="floor-manager" class="sidebar-section hidden">
+      <div class="section-title">Étages / Plans</div>
+      <div id="floor-list"></div>
+      <button id="btn-add-floor" class="btn-secondary w-full mt-2">+ Ajouter un étage</button>
+    </div>
+
+    <!-- Photo list for active floor/map -->
+    <div id="photo-list-panel" class="sidebar-section hidden">
+      <div class="section-title">Photos</div>
+      <div id="photo-list"></div>
+      <div id="add-photo-actions">
+        <button id="btn-add-photo-classic" class="btn-secondary w-full">+ Photo classique</button>
+        <button id="btn-add-photo-360" class="btn-secondary w-full mt-1">+ Photo 360°</button>
+        <button id="btn-add-group" class="btn-secondary w-full mt-1">+ Groupe</button>
+      </div>
+    </div>
+
+    <!-- Mode toggle: exterior map / floor plan -->
+    <div id="view-mode-toggle" class="sidebar-section hidden">
+      <div class="section-title">Mode d'affichage</div>
+      <div id="view-mode-buttons">
+        <button id="btn-mode-map" class="mode-btn active" data-mode="map">Carte extérieure</button>
+        <button id="btn-mode-plan" class="mode-btn" data-mode="plan">Plan intérieur</button>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- CENTER: map or floor plan viewer -->
+  <main id="center-panel">
+
+    <!-- Welcome screen -->
+    <div id="welcome-screen">
+      <div id="welcome-box">
+        <h1>Visite Virtuelle</h1>
+        <p>Créez ou chargez un site pour commencer.</p>
+        <div id="welcome-actions">
+          <button id="btn-new-site-welcome" class="btn-primary">Créer un nouveau site</button>
+          <button id="btn-load-site-welcome" class="btn-secondary">Charger un site existant</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Leaflet map (exterior) -->
+    <div id="map-container" class="hidden">
+      <div id="map"></div>
+    </div>
+
+    <!-- Floor plan viewer (interior) -->
+    <div id="plan-container" class="hidden">
+      <div id="plan-toolbar">
+        <span id="plan-floor-name">Plan</span>
+        <button id="btn-upload-plan" class="btn-secondary btn-sm">Changer le plan</button>
+        <input id="input-upload-plan" type="file" accept="image/*" class="hidden" />
+      </div>
+      <div id="plan-viewport">
+        <canvas id="plan-canvas"></canvas>
+        <svg id="plan-overlay"></svg>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- RIGHT PANEL: photo viewer -->
+  <aside id="viewer-panel" class="hidden">
+    <div id="viewer-header">
+      <span id="viewer-title">Photo</span>
+      <button id="btn-close-viewer" class="btn-icon">✕</button>
+    </div>
+    <!-- Classic photo viewer -->
+    <div id="classic-viewer" class="hidden">
+      <img id="classic-photo-img" src="" alt="Photo" />
+      <div id="classic-photo-caption"></div>
+    </div>
+    <!-- 360° viewer -->
+    <div id="panorama-viewer" class="hidden">
+      <div id="pannellum-container"></div>
+    </div>
+    <!-- Group viewer (thumbnail grid) -->
+    <div id="group-viewer" class="hidden">
+      <div id="group-grid"></div>
+    </div>
+    <!-- Photo metadata editor -->
+    <div id="photo-editor">
+      <div class="editor-row">
+        <label>Titre</label>
+        <input id="edit-photo-title" type="text" class="input-field" placeholder="Titre de la photo" />
+      </div>
+      <div class="editor-row">
+        <label>Description</label>
+        <textarea id="edit-photo-desc" class="input-field" rows="3" placeholder="Description..."></textarea>
+      </div>
+      <div class="editor-row editor-actions">
+        <button id="btn-edit-photo-file" class="btn-secondary btn-sm">Changer fichier</button>
+        <input id="input-edit-photo-file" type="file" accept="image/*" class="hidden" />
+        <button id="btn-delete-photo" class="btn-danger btn-sm">Supprimer</button>
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+<!-- ======= MODALS ======= -->
+
+<!-- New site modal -->
+<div id="modal-new-site" class="modal hidden">
+  <div class="modal-box">
+    <h2>Nouveau site</h2>
+    <div class="modal-row">
+      <label>Nom du site</label>
+      <input id="new-site-name" type="text" class="input-field" placeholder="Ex: Château de Vincennes" />
+    </div>
+    <div class="modal-row">
+      <label>Localisation (optionnel)</label>
+      <input id="new-site-lat" type="number" class="input-field input-half" placeholder="Latitude" step="any" />
+      <input id="new-site-lon" type="number" class="input-field input-half" placeholder="Longitude" step="any" />
+    </div>
+    <div class="modal-actions">
+      <button id="btn-create-site" class="btn-primary">Créer</button>
+      <button id="btn-cancel-new-site" class="btn-secondary">Annuler</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add floor modal -->
+<div id="modal-add-floor" class="modal hidden">
+  <div class="modal-box">
+    <h2>Ajouter un étage</h2>
+    <div class="modal-row">
+      <label>Nom de l'étage</label>
+      <input id="new-floor-name" type="text" class="input-field" placeholder="Ex: Rez-de-chaussée, 1er étage..." />
+    </div>
+    <div class="modal-row">
+      <label>Plan (image PNG/JPG)</label>
+      <input id="input-floor-plan" type="file" accept="image/*" class="input-field" />
+    </div>
+    <div class="modal-actions">
+      <button id="btn-create-floor" class="btn-primary">Ajouter</button>
+      <button id="btn-cancel-add-floor" class="btn-secondary">Annuler</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add photo modal -->
+<div id="modal-add-photo" class="modal hidden">
+  <div class="modal-box">
+    <h2 id="modal-add-photo-title">Ajouter une photo</h2>
+    <div class="modal-row">
+      <label>Fichier image</label>
+      <input id="input-new-photo-file" type="file" accept="image/*" class="input-field" />
+    </div>
+    <div class="modal-row">
+      <label>Titre</label>
+      <input id="new-photo-title" type="text" class="input-field" placeholder="Titre..." />
+    </div>
+    <div class="modal-row">
+      <label>Description</label>
+      <textarea id="new-photo-desc" class="input-field" rows="2" placeholder="Description..."></textarea>
+    </div>
+    <p class="modal-hint" id="add-photo-hint">Cliquez ensuite sur la carte ou le plan pour placer la photo.</p>
+    <div class="modal-actions">
+      <button id="btn-confirm-add-photo" class="btn-primary">Confirmer</button>
+      <button id="btn-cancel-add-photo" class="btn-secondary">Annuler</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal backdrop -->
+<div id="modal-backdrop" class="hidden"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

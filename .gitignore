@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/settings.json
+*.code-workspace
+
+# Logs
+*.log
+
+# Environment / secrets
+.env
+config.private.js
+
+# Build output
+dist/
+build/
