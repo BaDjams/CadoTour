@@ -28,7 +28,7 @@
 <!-- ======= MAIN LAYOUT ======= -->
 <div id="main-layout">
 
-  <!-- LEFT SIDEBAR: navigation only -->
+  <!-- LEFT SIDEBAR -->
   <aside id="sidebar">
     <div id="site-header">
       <span id="site-header-icon"></span>
@@ -41,7 +41,7 @@
     </nav>
   </aside>
 
-  <!-- CENTER: map or floor plan -->
+  <!-- CENTER: map or plan -->
   <main id="center-panel">
 
     <!-- Search bar overlay (only on map) -->
@@ -52,12 +52,18 @@
       <div id="map-search-results" class="hidden"></div>
     </div>
 
+    <!-- Step banner (perimeter draw / access arrow placement) -->
+    <div id="step-banner" class="hidden">
+      <span id="step-banner-text"></span>
+      <div id="step-banner-actions"></div>
+    </div>
+
     <!-- Leaflet map -->
     <div id="map-container">
       <div id="map"></div>
     </div>
 
-    <!-- Floor plan viewer -->
+    <!-- Plan viewer (building floor or site plan) -->
     <div id="plan-container" class="hidden">
       <div id="plan-toolbar">
         <span id="plan-floor-name">Plan</span>
@@ -69,6 +75,9 @@
         <svg id="plan-overlay"></svg>
       </div>
     </div>
+
+    <!-- Map context menu (right-click) -->
+    <div id="map-context-menu" class="hidden"></div>
 
   </main>
 
@@ -95,13 +104,13 @@
         <textarea id="edit-photo-desc" class="input-field" rows="3" placeholder="Description..."></textarea>
       </div>
       <div id="bearing-row" class="editor-row hidden">
-        <label>Direction de prise de vue</label>
+        <label>Orientation</label>
         <div class="bearing-wrap">
           <input id="edit-photo-bearing" type="number" min="0" max="360" step="1" class="input-field" placeholder="0–360°" />
           <span class="bearing-unit">°</span>
           <button id="btn-clear-bearing" class="btn-icon btn-sm" title="Réinitialiser à 0">↺</button>
         </div>
-        <div class="bearing-hint">0 = Nord. Faites glisser la flèche jaune sur la carte.</div>
+        <div class="bearing-hint">0 = Nord. Clic droit sur la photo → Orienter.</div>
       </div>
       <div class="editor-row editor-actions">
         <button id="btn-edit-photo-file" class="btn-secondary btn-sm">Changer fichier</button>
@@ -111,28 +120,6 @@
     </div>
   </aside>
 
-</div>
-
-<!-- ======= GALLERY MODAL (groups) ======= -->
-<div id="gallery-modal" class="hidden">
-  <div id="gallery-overlay"></div>
-  <div id="gallery-box">
-    <button id="gallery-close" class="btn-icon" title="Fermer">✕</button>
-    <div id="gallery-content">
-      <img id="gallery-img" src="" alt="" />
-      <div id="gallery-pannellum-container"></div>
-    </div>
-    <div id="gallery-footer">
-      <button id="gallery-prev" class="btn-secondary">◀</button>
-      <span id="gallery-counter">1 / 1</span>
-      <button id="gallery-next" class="btn-secondary">▶</button>
-    </div>
-    <div id="gallery-caption"></div>
-    <div id="gallery-add-actions">
-      <button id="btn-gallery-add-classic" class="btn-secondary btn-sm">+ Photo classique</button>
-      <button id="btn-gallery-add-360" class="btn-secondary btn-sm">+ Photo 360°</button>
-    </div>
-  </div>
 </div>
 
 <!-- ======= MODALS ======= -->
@@ -188,6 +175,76 @@
   </div>
 </div>
 
+<!-- Building form (create) -->
+<div id="modal-add-building" class="modal hidden">
+  <div class="modal-box">
+    <h2>Ajouter un bâtiment</h2>
+
+    <div class="modal-row">
+      <label>Nom du bâtiment</label>
+      <input id="bf-name" type="text" class="input-field" placeholder="Ex: Bâtiment principal, Annexe..." />
+    </div>
+
+    <div class="modal-row">
+      <label>Icône</label>
+      <div id="bf-icon-bank"></div>
+    </div>
+
+    <div class="modal-row">
+      <label>Nom du premier niveau (requis)</label>
+      <input id="bf-floor-name" type="text" class="input-field" placeholder="Ex: Rez-de-chaussée, RDC..." />
+    </div>
+
+    <div class="modal-row">
+      <label>Plan du niveau (PNG/JPG, optionnel)</label>
+      <input id="input-bf-floor-plan" type="file" accept="image/*" class="input-field" />
+    </div>
+
+    <div class="modal-actions">
+      <button id="btn-bf-confirm" class="btn-primary">Créer le bâtiment</button>
+      <button id="btn-bf-cancel" class="btn-secondary">Annuler</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add floor to existing building -->
+<div id="modal-add-floor" class="modal hidden">
+  <div class="modal-box">
+    <h2>Ajouter un niveau</h2>
+    <div class="modal-row">
+      <label>Nom du niveau</label>
+      <input id="new-floor-name" type="text" class="input-field" placeholder="Ex: 1er étage, Sous-sol..." />
+    </div>
+    <div class="modal-row">
+      <label>Plan (image PNG/JPG, optionnel)</label>
+      <input id="input-floor-plan" type="file" accept="image/*" class="input-field" />
+    </div>
+    <div class="modal-actions">
+      <button id="btn-create-floor" class="btn-primary">Ajouter</button>
+      <button id="btn-cancel-add-floor" class="btn-secondary">Annuler</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add site plan -->
+<div id="modal-add-siteplan" class="modal hidden">
+  <div class="modal-box">
+    <h2>Ajouter un plan de site</h2>
+    <div class="modal-row">
+      <label>Nom du plan</label>
+      <input id="new-siteplan-name" type="text" class="input-field" placeholder="Ex: Plan de masses, Sous-sols..." />
+    </div>
+    <div class="modal-row">
+      <label>Image du plan (PNG/JPG)</label>
+      <input id="input-siteplan-file" type="file" accept="image/*" class="input-field" />
+    </div>
+    <div class="modal-actions">
+      <button id="btn-create-siteplan" class="btn-primary">Ajouter</button>
+      <button id="btn-cancel-add-siteplan" class="btn-secondary">Annuler</button>
+    </div>
+  </div>
+</div>
+
 <!-- Add photo modal -->
 <div id="modal-add-photo" class="modal hidden">
   <div class="modal-box">
@@ -211,21 +268,14 @@
   </div>
 </div>
 
-<!-- Add floor modal -->
-<div id="modal-add-floor" class="modal hidden">
-  <div class="modal-box">
-    <h2>Ajouter un étage</h2>
-    <div class="modal-row">
-      <label>Nom de l'étage</label>
-      <input id="new-floor-name" type="text" class="input-field" placeholder="Ex: Rez-de-chaussée, 1er étage..." />
-    </div>
-    <div class="modal-row">
-      <label>Plan (image PNG/JPG)</label>
-      <input id="input-floor-plan" type="file" accept="image/*" class="input-field" />
-    </div>
+<!-- Step prompt modal (perimeter / access arrow) -->
+<div id="modal-step-prompt" class="modal hidden">
+  <div class="modal-box" style="gap:12px">
+    <h2 id="step-prompt-title" style="font-size:16px"></h2>
+    <p id="step-prompt-text" style="color:var(--color-text-muted);font-size:13px;line-height:1.5"></p>
     <div class="modal-actions">
-      <button id="btn-create-floor" class="btn-primary">Ajouter</button>
-      <button id="btn-cancel-add-floor" class="btn-secondary">Annuler</button>
+      <button id="btn-step-yes" class="btn-primary">Oui</button>
+      <button id="btn-step-later" class="btn-secondary">Plus tard</button>
     </div>
   </div>
 </div>
