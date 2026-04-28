@@ -1,4 +1,13 @@
 'use strict';
+import {
+  escapeHtml, escapeAttr,
+  findPhotoSiblings as _findPhotoSiblings,
+  makeSiteMarkerIcon,
+  makeBuildingMarkerIcon as _makeBuildingMarkerIcon,
+  drawPlanCanvas as _drawPlanCanvas,
+  getActivePlan as _getActivePlan,
+  updateGalleryNav as _updateGalleryNav,
+} from './shared.js';
 
 // ===== STATE =====
 const state = {
@@ -21,13 +30,16 @@ let accessArrowMarker = null;
 let pannellumViewer  = null;
 const plan = { img: null, scale: 1, offsetX: 0, offsetY: 0, dragging: false };
 
+// ===== VIEWER GALLERY =====
+let viewerGallery    = [];
+let viewerGalleryIdx = 0;
+
+// ===== PENDING LOAD =====
+let pendingLoadFile = null;
+
 // ===== UTILITIES =====
-function escapeHtml(s) {
-  return String(s || '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-function escapeAttr(s) { return String(s || '').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
 function getActiveSite() { return state.sites.find(s => s.id === state.activeSiteId) || null; }
+function findPhotoSiblings(photo) { return _findPhotoSiblings(photo, getActiveSite()?.photos ?? []); }
 
 // ===== MAP INIT =====
 function initMap() {
@@ -78,8 +90,7 @@ function loadSiteFromFile(file) {
       addSiteMarker(data);
       if (data.perimeter)   renderSitePerimeter(data);
       if (data.accessArrow) renderAccessArrow(data);
-      if (state.sites.length === 1) selectSite(data.id);
-      else renderSidebar();
+      selectSite(data.id);
     } catch (err) {
       alert('Fichier invalide : ' + err.message);
     }
@@ -88,18 +99,6 @@ function loadSiteFromFile(file) {
 }
 
 // ===== SITE MARKERS =====
-function makeSiteMarkerIcon(site, isActive) {
-  return L.divIcon({
-    className: '',
-    html: `<div class="site-marker ${isActive ? 'active' : ''}">
-             <div class="site-marker-bubble" title="${escapeAttr(site.name)}">${site.icon || '🏛'}</div>
-             <div class="site-marker-name">${escapeHtml(site.name)}</div>
-           </div>`,
-    iconSize: [120, 54],
-    iconAnchor: [60, 27],
-  });
-}
-
 function addSiteMarker(site) {
   const isActive = site.id === state.activeSiteId;
   const m = L.marker([site.lat, site.lon], { icon: makeSiteMarkerIcon(site, isActive) })
@@ -115,16 +114,7 @@ function updateSiteMarkerIcon(siteId, isActive) {
 
 // ===== BUILDING MARKERS =====
 function makeBuildingMarkerIcon(building) {
-  const isActive = building.id === state.activeBuildingId;
-  return L.divIcon({
-    className: '',
-    html: `<div class="building-marker ${isActive ? 'active' : ''}">
-             <div class="building-marker-bubble" title="${escapeAttr(building.name)}">${building.icon || '🏢'}</div>
-             <div class="building-marker-name">${escapeHtml(building.name)}</div>
-           </div>`,
-    iconSize: [100, 46],
-    iconAnchor: [50, 23],
-  });
+  return _makeBuildingMarkerIcon(building, building.id === state.activeBuildingId);
 }
 
 function addBuildingMarker(building) {
@@ -188,9 +178,11 @@ function clearPhotoMarkers() {
 function refreshMarkerActive() {
   const site = getActiveSite();
   if (!site) return;
-  (site.photos || []).forEach(p => {
-    if (photoMarkers[p.id])
-      photoMarkers[p.id].setIcon(makePhotoIcon(p.type, p.bearing, p.id === state.activePhotoId));
+  Object.keys(photoMarkers).forEach(id => {
+    const p = site.photos.find(ph => ph.id === id);
+    if (!p) return;
+    const isActive = findPhotoSiblings(p).includes(state.activePhotoId);
+    photoMarkers[id].setIcon(makePhotoIcon(p.type, p.bearing, isActive));
   });
 }
 
@@ -233,8 +225,13 @@ function selectSite(siteId) {
   const site = getActiveSite();
   if (site) {
     (site.buildings || []).forEach(b => addBuildingMarker(b));
-    (site.photos || []).filter(p => !p.floorId && !p.sitePlanId && p.lat != null)
-      .forEach(p => addPhotoMarker(p));
+    // Un seul marker par position unique (point pouvant contenir plusieurs photos)
+    const mapPhotos = (site.photos || []).filter(p => !p.floorId && !p.sitePlanId && p.lat != null);
+    const seenPos = new Set();
+    mapPhotos.forEach(p => {
+      const key = `${p.lat},${p.lon}`;
+      if (!seenPos.has(key)) { seenPos.add(key); addPhotoMarker(p); }
+    });
     if (site.perimeter)   renderSitePerimeter(site);
     if (site.accessArrow) renderAccessArrow(site);
     map.flyTo([site.lat, site.lon], Math.max(map.getZoom(), 17));
@@ -244,6 +241,7 @@ function selectSite(siteId) {
   switchViewMode('map');
   closeViewer();
   renderSiteHeader();
+  updateTopBarButton();
 }
 
 // ===== VIEW MODE =====
@@ -366,20 +364,7 @@ function appendNavItem(nav, { icon, label, active, sub, onClick }) {
 }
 
 // ===== PLAN RENDERING =====
-function getActivePlan() {
-  const site = getActiveSite();
-  if (!site) return null;
-  if (state.activeSitePlanId) {
-    const sp = site.sitePlans?.find(s => s.id === state.activeSitePlanId);
-    return sp ? { label: sp.name, imageDataURL: sp.imageDataURL } : null;
-  }
-  if (state.activeBuildingId && state.activeFloorId) {
-    const bld   = site.buildings?.find(b => b.id === state.activeBuildingId);
-    const floor = bld?.floors?.find(f => f.id === state.activeFloorId);
-    return floor ? { label: `${bld.name} — ${floor.name}`, imageDataURL: floor.imageDataURL } : null;
-  }
-  return null;
-}
+function getActivePlan() { return _getActivePlan(state, getActiveSite()); }
 
 function renderPlan() {
   const active = getActivePlan();
@@ -400,14 +385,7 @@ function renderPlan() {
   img.src = active.imageDataURL;
 }
 
-function drawPlanCanvas() {
-  if (!plan.img) return;
-  const canvas = document.getElementById('plan-canvas');
-  canvas.width  = plan.img.width;
-  canvas.height = plan.img.height;
-  canvas.style.transform = `translate(${plan.offsetX}px,${plan.offsetY}px) scale(${plan.scale})`;
-  canvas.getContext('2d').drawImage(plan.img, 0, 0);
-}
+function drawPlanCanvas() { _drawPlanCanvas(plan); }
 
 function renderPlanMarkers() {
   const svg = document.getElementById('plan-overlay');
@@ -424,10 +402,15 @@ function renderPlanMarkers() {
     );
   }
 
+  const seenPlanPos = new Set();
   photos.forEach(photo => {
+    const posKey = `${photo.planX},${photo.planY}`;
+    if (seenPlanPos.has(posKey)) return;
+    seenPlanPos.add(posKey);
+
     const sx = photo.planX * plan.scale + plan.offsetX;
     const sy = photo.planY * plan.scale + plan.offsetY;
-    const isActive = photo.id === state.activePhotoId;
+    const isActive = findPhotoSiblings(photo).includes(state.activePhotoId);
     const color = photo.type === '360' ? '#2980b9' : photo.type === 'panoramic' ? '#e07b20' : '#e94560';
 
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
@@ -493,19 +476,25 @@ function openViewer(photoId) {
   const photo = site?.photos.find(p => p.id === photoId);
   if (!photo) return;
 
+  viewerGallery    = findPhotoSiblings(photo);
+  viewerGalleryIdx = Math.max(0, viewerGallery.indexOf(photoId));
   state.activePhotoId = photoId;
   refreshMarkerActive();
   renderPlanMarkers();
+  _renderViewerPhoto(photo);
+  updateGalleryNav();
+}
 
+function _renderViewerPhoto(photo) {
   document.getElementById('viewer-panel').classList.remove('hidden');
   document.getElementById('viewer-title').textContent = photo.title || 'Photo';
 
   document.getElementById('classic-viewer').classList.add('hidden');
   document.getElementById('panorama-viewer').classList.add('hidden');
+  if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
 
   if (photo.type === '360') {
     document.getElementById('panorama-viewer').classList.remove('hidden');
-    if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
     if (photo.dataURL) {
       pannellumViewer = pannellum.viewer('pannellum-container', {
         type: 'equirectangular', panorama: photo.dataURL,
@@ -529,12 +518,81 @@ function openViewer(photoId) {
   }
 }
 
+function updateGalleryNav() { _updateGalleryNav(viewerGallery, viewerGalleryIdx); }
+
+function navigateGallery(delta) {
+  const site = getActiveSite();
+  if (!site || !viewerGallery.length) return;
+  viewerGalleryIdx = ((viewerGalleryIdx + delta) + viewerGallery.length) % viewerGallery.length;
+  const photo = site.photos.find(p => p.id === viewerGallery[viewerGalleryIdx]);
+  if (!photo) return;
+  state.activePhotoId = photo.id;
+  refreshMarkerActive();
+  renderPlanMarkers();
+  _renderViewerPhoto(photo);
+  updateGalleryNav();
+}
+
 function closeViewer() {
   state.activePhotoId = null;
+  viewerGallery       = [];
+  viewerGalleryIdx    = 0;
   document.getElementById('viewer-panel').classList.add('hidden');
   if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
   refreshMarkerActive();
   renderPlanMarkers();
+}
+
+// ===== CLOSE SITE =====
+function updateTopBarButton() {
+  document.getElementById('btn-close-site').disabled = !state.activeSiteId;
+}
+
+function showCloseSiteModal(name) {
+  document.getElementById('close-site-name').textContent = name;
+  document.getElementById('modal-close-site').classList.remove('hidden');
+  document.getElementById('modal-backdrop').classList.remove('hidden');
+}
+
+function hideCloseSiteModal() {
+  document.getElementById('modal-close-site').classList.add('hidden');
+  document.getElementById('modal-backdrop').classList.add('hidden');
+}
+
+function closeSite() {
+  const site = getActiveSite();
+  if (!site) return;
+  showCloseSiteModal(site.name || 'ce site');
+}
+
+function _doCloseSite() {
+  hideCloseSiteModal();
+  const siteId = state.activeSiteId;
+  if (!siteId) return;
+
+  state.activeSiteId     = null;
+  state.activeBuildingId = null;
+  state.activeFloorId    = null;
+  state.activeSitePlanId = null;
+  state.activePhotoId    = null;
+
+  clearBuildingMarkers();
+  clearPhotoMarkers();
+  if (siteMarkers[siteId]) { siteMarkers[siteId].remove(); delete siteMarkers[siteId]; }
+  if (perimeterLayer)    { perimeterLayer.remove();    perimeterLayer    = null; }
+  if (accessArrowMarker) { accessArrowMarker.remove(); accessArrowMarker = null; }
+
+  state.sites = state.sites.filter(s => s.id !== siteId);
+
+  closeViewer();
+  renderSidebar();
+  renderSiteHeader();
+  updateTopBarButton();
+  if (state.viewMode !== 'map') switchViewMode('map');
+
+  const fileToLoad = pendingLoadFile;
+  pendingLoadFile = null;
+  if (fileToLoad) loadSiteFromFile(fileToLoad);
 }
 
 // ===== INIT =====
@@ -545,16 +603,46 @@ function init() {
   renderSidebar();
 
   const inp = document.createElement('input');
-  inp.type = 'file'; inp.accept = '.cado,.json'; inp.multiple = true;
+  inp.type = 'file'; inp.accept = '.cado,.json';
   inp.addEventListener('change', e => {
-    Array.from(e.target.files).forEach(loadSiteFromFile);
+    const file = e.target.files[0];
     inp.value = '';
+    if (!file) return;
+    if (state.activeSiteId) {
+      pendingLoadFile = file;
+      showCloseSiteModal(getActiveSite()?.name || 'ce site');
+    } else {
+      loadSiteFromFile(file);
+    }
   });
   document.getElementById('btn-load-site').addEventListener('click', () => inp.click());
+  document.getElementById('btn-close-site').addEventListener('click', closeSite);
   document.getElementById('btn-close-viewer').addEventListener('click', closeViewer);
+  document.getElementById('btn-viewer-prev').addEventListener('click', () => navigateGallery(-1));
+  document.getElementById('btn-viewer-next').addEventListener('click', () => navigateGallery(+1));
+  document.getElementById('btn-viewer-fullscreen').addEventListener('click', () => {
+    const wrap = document.getElementById('viewer-media-wrap');
+    if (!document.fullscreenElement) wrap.requestFullscreen?.();
+    else document.exitFullscreen?.();
+  });
+  const _onFsChange = () => {
+    const btn = document.getElementById('btn-viewer-fullscreen');
+    if (document.fullscreenElement) { btn.textContent = '✕'; btn.title = 'Quitter le plein écran'; }
+    else                            { btn.textContent = '⛶'; btn.title = 'Plein écran'; }
+  };
+  document.addEventListener('fullscreenchange', _onFsChange);
+  document.addEventListener('webkitfullscreenchange', _onFsChange);
+
+  document.getElementById('btn-close-confirm').addEventListener('click', _doCloseSite);
+  document.getElementById('btn-close-cancel').addEventListener('click', () => {
+    pendingLoadFile = null;
+    hideCloseSiteModal();
+  });
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') closeViewer();
+    if (e.key === 'Escape')     closeViewer();
+    if (e.key === 'ArrowLeft')  navigateGallery(-1);
+    if (e.key === 'ArrowRight') navigateGallery(+1);
   });
 }
 

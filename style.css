@@ -244,6 +244,16 @@ html, body {
 }
 #step-banner-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
+/* ===== INTERACTION MODE (move / orient) ===== */
+/* Désactive les clics sur tous les marqueurs et change le curseur */
+#map-container.interaction-active .leaflet-marker-pane,
+#map-container.interaction-active .leaflet-shadow-pane {
+  pointer-events: none !important;
+}
+#map-container.interaction-active .leaflet-container {
+  cursor: crosshair !important;
+}
+
 /* ===== MAP CONTEXT MENU ===== */
 #map-context-menu {
   position: absolute;
@@ -478,18 +488,16 @@ html, body {
   filter: drop-shadow(0 2px 6px rgba(0,0,0,0.5));
 }
 .site-marker-bubble {
-  font-size: 22px;
-  background: var(--color-surface);
-  border: 2px solid var(--color-border);
+  font-size: 30px;
+  background: rgba(22,33,62,0.6);
   border-radius: 8px;
-  width: 42px; height: 42px;
+  width: 52px; height: 52px;
   display: flex; align-items: center; justify-content: center;
   transition: all var(--transition);
 }
 .site-marker.active .site-marker-bubble {
-  border-color: var(--color-accent);
-  background: rgba(233,69,96,0.15);
-  box-shadow: 0 0 0 3px rgba(233,69,96,0.3);
+  background: rgba(233,69,96,0.2);
+  box-shadow: 0 0 0 3px rgba(233,69,96,0.4);
 }
 .site-marker-name {
   font-size: 10px;
@@ -515,17 +523,16 @@ html, body {
   filter: drop-shadow(0 2px 5px rgba(0,0,0,0.5));
 }
 .building-marker-bubble {
-  font-size: 17px;
+  font-size: 24px;
   background: rgba(142,68,173,0.2);
-  border: 2px solid var(--color-building);
   border-radius: 6px;
-  width: 34px; height: 34px;
+  width: 44px; height: 44px;
   display: flex; align-items: center; justify-content: center;
   transition: all var(--transition);
 }
 .building-marker.active .building-marker-bubble {
-  background: rgba(142,68,173,0.35);
-  box-shadow: 0 0 0 3px rgba(142,68,173,0.35);
+  background: rgba(142,68,173,0.4);
+  box-shadow: 0 0 0 3px rgba(142,68,173,0.4);
 }
 .building-marker-name {
   font-size: 9px;
@@ -638,7 +645,7 @@ html, body {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  max-height: 120px;
+  max-height: 150px;
   overflow-y: auto;
   background: var(--color-bg);
   border: 1px solid var(--color-border);
@@ -646,12 +653,12 @@ html, body {
   padding: 6px;
 }
 .icon-bank-btn {
-  width: 36px; height: 36px;
+  width: 44px; height: 44px;
   background: none;
   border: 2px solid transparent;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 20px;
+  font-size: 26px;
   display: flex; align-items: center; justify-content: center;
   transition: all var(--transition);
   flex-shrink: 0;

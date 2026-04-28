@@ -1,4 +1,13 @@
 // app.js — CadoCreator
+import {
+  escapeHtml, escapeAttr,
+  findPhotoSiblings as _findPhotoSiblings,
+  makeSiteMarkerIcon,
+  makeBuildingMarkerIcon as _makeBuildingMarkerIcon,
+  drawPlanCanvas as _drawPlanCanvas,
+  getActivePlan as _getActivePlan,
+  updateGalleryNav as _updateGalleryNav,
+} from './shared.js';
 
 // ===== CACHE (IndexedDB — pas de limite de taille) =====
 const DB_NAME  = 'cadocreator';
@@ -112,10 +121,19 @@ let pannellumViewer = null;
 let viewerGallery    = [];  // photoIds at current point
 let viewerGalleryIdx = 0;
 
+// ===== PENDING LOAD / NAVIGATION =====
+let pendingLoadFile    = null; // fichier à charger après fermeture du site courant
+let pendingNavigateUrl = null; // URL vers laquelle naviguer après fermeture du site courant
+
 // ===== PHOTO ADDITION =====
 let pendingPhotoType  = null;
 let pendingPhotoPos   = null;
 let pendingPhotoFiles = [];   // File[] sélectionnés / glissés
+
+// ===== PLAN PHOTO MOVE =====
+let planMoveGhostPos     = null; // {planX, planY, buildingId, floorId, sitePlanId}
+let movePlanPhotoSiblings = [];  // photo objects being moved together
+let movePlanPhotoCleanup  = null;
 
 // ===== SITE FORM TEMP =====
 let sfEditingId = null;
@@ -138,15 +156,59 @@ let searchTimer = null;
 let stepQueue = [];
 
 // ===== CONSTANTS =====
+// Typologies de sites (zones d'intervention)
 const SITE_ICONS = [
-  '🏛','🏰','🏯','🏟','🏗','🏠','🏡','🏢','🏣','🏤','🏥','🏦','🏨','🏪','🏫','🏭',
-  '🗺','🗼','🗽','🌁','🌃','🌆','🌇','🌉','🎡','🎢','🎪','⛩','🕌','🕍','⛪','🛕',
-  '🏔','🌋','⛰','🗻','🏕','🏖','🏝','🌊','🏜','🌄','🌅','🌌','🏁','🔭','🎭','🏺',
+  '🏘', // Zone résidentielle pavillonnaire
+  '🏙', // Zone urbaine dense
+  '🏭', // Zone industrielle / ZI
+  '🏬', // Zone commerciale / centre commercial
+  '🏥', // Site hospitalier / sanitaire
+  '🏫', // Campus scolaire / universitaire
+  '🌾', // Zone agricole / rurale
+  '🌲', // Zone boisée / forêt
+  '🏛', // Centre historique / patrimoine
+  '🚂', // Gare / infrastructure ferroviaire
+  '✈', // Aéroport / aérodrome
+  '⚓', // Port / zone portuaire
+  '🏖', // Zone littorale / plage
+  '🏔', // Zone montagneuse
+  '🌊', // Zone inondable / bord de rivière
+  '⚡', // Site industriel à risque (SEVESO)
+  '🎡', // Parc de loisirs / attraction
+  '🏟', // Enceinte sportive
+  '🏕', // Camping / aire de loisirs
+  '🔥', // Site sinistré / zone d'intervention
 ];
 
+// Typologies de bâtiments (nomenclature SDIS / pompiers)
 const BUILDING_ICONS = [
-  '🏢','🏛','🏗','🏠','🏡','🏣','🏤','🏥','🏦','🏨','🏪','🏫','🏭',
-  '🏰','🏯','🕌','🕍','⛪','🛕','🗼','🎪','🎭',
+  '🏠', // Maison individuelle
+  '🏡', // Maison avec jardin / villa
+  '🏘', // Lotissement / habitat groupé
+  '🏢', // Immeuble collectif / tour résidentielle
+  '🏗', // Chantier / construction en cours
+  '🏫', // École / collège / lycée / université
+  '🏥', // Hôpital / clinique / EHPAD
+  '🏨', // Hôtel / hébergement touristique
+  '🏪', // Commerce / boutique de proximité
+  '🏬', // Centre commercial / grande surface
+  '🏦', // Banque / administration financière
+  '🏤', // Administration publique / mairie
+  '🏭', // Usine / industrie / ICPE
+  '📦', // Entrepôt / stockage / logistique
+  '🌾', // Ferme / exploitation agricole
+  '🏟', // Stade / arène / enceinte sportive
+  '🎭', // Théâtre / salle de spectacle / cinéma
+  '🎪', // Salle polyvalente / chapiteau / MJC
+  '⛪', // Église / temple protestant
+  '🕌', // Mosquée
+  '🛕', // Temple / pagode / lieu de culte
+  '🕍', // Synagogue
+  '🏛', // Musée / patrimoine / monument historique
+  '🏰', // Château / site historique classé
+  '🚒', // Caserne de pompiers / SDIS
+  '⛽', // Station-service / dépôt carburant
+  '🅿', // Parking / garage / parc de stationnement
 ];
 
 // ===== HELPERS =====
@@ -163,16 +225,6 @@ function fileToDataURL(file) {
   });
 }
 
-function escapeAttr(s) {
-  return String(s).replace(/"/g, '&quot;').replace(/</g, '&lt;');
-}
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 function getActiveSite() {
   return state.sites.find(s => s.id === state.activeSiteId) || null;
 }
@@ -185,7 +237,7 @@ function showModal(id) {
 function hideModal(id) {
   document.getElementById(id).classList.add('hidden');
   const modalIds = ['modal-site-form','modal-add-photo','modal-add-floor',
-                    'modal-add-building','modal-add-siteplan','modal-step-prompt'];
+                    'modal-add-building','modal-add-siteplan','modal-step-prompt','modal-close-site'];
   const anyOpen = modalIds.some(
     mid => mid !== id && !document.getElementById(mid).classList.contains('hidden')
   );
@@ -291,6 +343,12 @@ function showMapContextMenu(containerPoint, items) {
   const menu = document.getElementById('map-context-menu');
   menu.innerHTML = '';
   items.forEach(item => {
+    if (!item.label) {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-menu-sep';
+      menu.appendChild(sep);
+      return;
+    }
     const btn = document.createElement('button');
     btn.className = 'ctx-menu-btn';
     btn.textContent = item.label;
@@ -684,10 +742,12 @@ function setStepBanner(text, buttons) {
     actionsEl.appendChild(btn);
   });
   document.getElementById('step-banner').classList.remove('hidden');
+  document.getElementById('map-container')?.classList.add('interaction-active');
 }
 
 function clearStepBanner() {
   document.getElementById('step-banner').classList.add('hidden');
+  document.getElementById('map-container')?.classList.remove('interaction-active');
 }
 
 // ===== LOAD / SAVE =====
@@ -736,7 +796,7 @@ function loadSiteFromFile(file) {
       if (data.perimeter)   renderSitePerimeter(data);
       if (data.accessArrow) renderAccessArrow(data);
 
-      if (state.sites.length === 1) selectSite(data.id);
+      selectSite(data.id);
       updateTopBarButtons();
     } catch (err) {
       alert('Fichier JSON invalide : ' + err.message);
@@ -745,18 +805,77 @@ function loadSiteFromFile(file) {
   reader.readAsText(file);
 }
 
-function saveSite() {
-  const site = getActiveSite();
-  if (!site) return;
+function downloadSite(site) {
   const json = JSON.stringify(site, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
   a.href = url;
   a.download = (site.name || 'site') + '.cado';
-  clearCacheState();
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function saveSite() {
+  const site = getActiveSite();
+  if (!site) return;
+  downloadSite(site);
+  clearCacheState();
+}
+
+// ===== CLOSE SITE =====
+function closeSite() {
+  const site = getActiveSite();
+  if (!site) return;
+  document.getElementById('close-site-name').textContent = site.name || 'ce site';
+  showModal('modal-close-site');
+}
+
+async function _doCloseSite(withSave) {
+  hideModal('modal-close-site');
+  const site = getActiveSite();
+  if (!site) return;
+
+  if (withSave) downloadSite(site);
+
+  const siteId = site.id;
+
+  // Reset active state
+  state.activeSiteId     = null;
+  state.activeBuildingId = null;
+  state.activeFloorId    = null;
+  state.activeSitePlanId = null;
+  state.activePhotoId    = null;
+
+  // Clean up map layers
+  clearBuildingMarkers();
+  clearPhotoMarkers();
+  removeSiteMarker(siteId);
+  if (perimeterLayer)    { perimeterLayer.remove();    perimeterLayer    = null; }
+  if (accessArrowMarker) { accessArrowMarker.remove(); accessArrowMarker = null; }
+
+  // Remove from memory
+  state.sites = state.sites.filter(s => s.id !== siteId);
+
+  // Update cache: vider si plus rien, sinon sauver les sites restants
+  clearTimeout(_saveTimer);
+  if (state.sites.length) {
+    await saveCacheNow();
+  } else {
+    await clearCacheState();
+  }
+
+  // Update UI
+  closeViewer();
+  renderSidebar();
+  renderSiteHeader();
+  updateTopBarButtons();
+  if (state.viewMode !== 'map') switchViewMode('map');
+
+  const fileToLoad = pendingLoadFile;   pendingLoadFile    = null;
+  const urlToGo    = pendingNavigateUrl; pendingNavigateUrl = null;
+  if (fileToLoad) { loadSiteFromFile(fileToLoad); return; }
+  if (urlToGo)    { window.location.href = urlToGo; }
 }
 
 // ===== SITE SELECTION =====
@@ -822,23 +941,11 @@ function deselectSite() {
 
 function updateTopBarButtons() {
   const hasSite = !!state.activeSiteId;
-  document.getElementById('btn-save-site').disabled   = !hasSite;
-  document.getElementById('btn-export-site').disabled = !hasSite;
+  document.getElementById('btn-save-site').disabled  = !hasSite;
+  document.getElementById('btn-close-site').disabled = !hasSite;
 }
 
 // ===== SITE MARKERS =====
-function makeSiteMarkerIcon(site, isActive) {
-  return L.divIcon({
-    className: '',
-    html: `<div class="site-marker ${isActive ? 'active' : ''}">
-             <div class="site-marker-bubble" title="${escapeAttr(site.name)}">${site.icon || '🏛'}</div>
-             <div class="site-marker-name">${escapeHtml(site.name)}</div>
-           </div>`,
-    iconSize: [120, 54],
-    iconAnchor: [60, 27],
-  });
-}
-
 function addSiteMarker(site) {
   if (!map) return;
   const isActive = site.id === state.activeSiteId;
@@ -846,6 +953,7 @@ function addSiteMarker(site) {
     .addTo(map)
     .on('click', e => {
       L.DomEvent.stopPropagation(e);
+      if (interactionMode) return;
       if (state.activeSiteId === site.id) {
         // Already selected: nothing (user can right-click for options)
       } else {
@@ -854,6 +962,7 @@ function addSiteMarker(site) {
     })
     .on('contextmenu', e => {
       L.DomEvent.stopPropagation(e);
+      if (interactionMode) return;
       hideMapContextMenu();
       showMapContextMenu(e.containerPoint, [
         { label: '⬡ Déplacer',        action: () => startMoveSite(site.id) },
@@ -924,16 +1033,7 @@ function deleteBuilding(buildingId) {
 }
 
 function makeBuildingMarkerIcon(building) {
-  const isActive = building.id === state.activeBuildingId;
-  return L.divIcon({
-    className: '',
-    html: `<div class="building-marker ${isActive ? 'active' : ''}">
-             <div class="building-marker-bubble" title="${escapeAttr(building.name)}">${building.icon || '🏢'}</div>
-             <div class="building-marker-name">${escapeHtml(building.name)}</div>
-           </div>`,
-    iconSize: [100, 46],
-    iconAnchor: [50, 23],
-  });
+  return _makeBuildingMarkerIcon(building, building.id === state.activeBuildingId);
 }
 
 function addBuildingMarker(building) {
@@ -942,6 +1042,7 @@ function addBuildingMarker(building) {
     .addTo(map)
     .on('click', e => {
       L.DomEvent.stopPropagation(e);
+      if (interactionMode) return;
       // Open first floor of this building
       if (building.floors?.length) {
         selectFloor(building.id, building.floors[0].id);
@@ -949,6 +1050,7 @@ function addBuildingMarker(building) {
     })
     .on('contextmenu', e => {
       L.DomEvent.stopPropagation(e);
+      if (interactionMode) return;
       showMapContextMenu(e.containerPoint, [
         { label: '⬡ Déplacer',              action: () => startMoveBuilding(building.id) },
         { label: '🗑 Supprimer ce bâtiment', action: () => deleteBuilding(building.id) },
@@ -1015,11 +1117,16 @@ function addPhotoMarker(photo) {
     })
     .on('contextmenu', e => {
       L.DomEvent.stopPropagation(e);
+      if (interactionMode) return;
       hideMapContextMenu();
+      const siblingCount = findPhotoSiblings(photo).length;
       showMapContextMenu(e.containerPoint, [
-        { label: '⬡ Déplacer',  action: () => startMovePhoto(photo.id) },
-        { label: '↻ Orienter',  action: () => startOrientPhoto(photo.id) },
-        { label: '🗑 Supprimer', action: () => deletePhoto(photo.id) },
+        { label: '⬡ Déplacer le point',  action: () => startMovePhoto(photo.id) },
+        { label: '↻ Orienter le point',  action: () => startOrientPhoto(photo.id) },
+        { label: null },
+        { label: photoAddLabel(photo.type), action: () => addPhotoToPoint(photo) },
+        { label: null },
+        { label: `🗑 Supprimer${siblingCount > 1 ? ' cette photo' : ' le point'}`, action: () => deletePhoto(photo.id) },
       ]);
     })
     .on('mouseover', function () { this.getElement()?.classList.add('hovered'); })
@@ -1057,14 +1164,19 @@ function refreshMarkerActive() {
 
 // ===== MOVE PHOTO =====
 function startMovePhoto(photoId) {
-  const m = photoMarkers[photoId];
-  if (!m) return;
-  m.getElement()?.classList.add('ghost');
+  const site  = getActiveSite();
+  const photo = site?.photos.find(p => p.id === photoId);
+  if (!photo) return;
+
+  // Ghost all photos at this point
+  findPhotoSiblings(photo).forEach(id => {
+    photoMarkers[id]?.getElement()?.classList.add('ghost');
+  });
 
   interactionMode = 'move-photo';
   movePhotoId     = photoId;
   setStepBanner(
-    'Cliquez sur la nouvelle position de la photo.',
+    'Cliquez sur la nouvelle position du point (toutes ses photos seront déplacées).',
     [{ label: 'Annuler', primary: false, action: cancelMovePhoto }]
   );
 }
@@ -1074,18 +1186,25 @@ function commitMovePhoto(latlng) {
   const site  = getActiveSite();
   const photo = site?.photos.find(p => p.id === movePhotoId);
   if (photo) {
-    photo.lat = latlng.lat;
-    photo.lon = latlng.lng;
-    refreshPhotoMarker(photo.id);
+    const oldLat = photo.lat, oldLon = photo.lon;
+    site.photos
+      .filter(p => p.lat === oldLat && p.lon === oldLon)
+      .forEach(p => { p.lat = latlng.lat; p.lon = latlng.lng; refreshPhotoMarker(p.id); });
   }
   interactionMode = null;
   movePhotoId = null;
+  scheduleCacheSave();
 }
 
 function cancelMovePhoto() {
   clearStepBanner();
-  const m = photoMarkers[movePhotoId];
-  m?.getElement()?.classList.remove('ghost');
+  const site  = getActiveSite();
+  const photo = site?.photos.find(p => p.id === movePhotoId);
+  if (photo) {
+    findPhotoSiblings(photo).forEach(id => {
+      photoMarkers[id]?.getElement()?.classList.remove('ghost');
+    });
+  }
   interactionMode = null;
   movePhotoId = null;
 }
@@ -1183,11 +1302,14 @@ function commitOrientPhoto(latlng) {
   if (photo && photo.lat != null) {
     const dx = latlng.lng - photo.lon;
     const dy = latlng.lat - photo.lat;
-    photo.bearing = ((Math.atan2(dx, dy) * 180 / Math.PI) + 360) % 360;
-    refreshPhotoMarker(photo.id);
+    const bearing = ((Math.atan2(dx, dy) * 180 / Math.PI) + 360) % 360;
+    site.photos
+      .filter(p => p.lat === photo.lat && p.lon === photo.lon)
+      .forEach(p => { p.bearing = bearing; refreshPhotoMarker(p.id); });
     if (state.activePhotoId === photo.id) {
-      document.getElementById('edit-photo-bearing').value = Math.round(photo.bearing);
+      document.getElementById('edit-photo-bearing').value = Math.round(bearing);
     }
+    scheduleCacheSave();
   }
 
   interactionMode = null;
@@ -1427,21 +1549,7 @@ function deleteSitePlan(planId) {
 }
 
 // ===== FLOOR PLAN RENDERING =====
-function getActivePlan() {
-  const site = getActiveSite();
-  if (!site) return null;
-
-  if (state.activeSitePlanId) {
-    const sp = site.sitePlans?.find(sp => sp.id === state.activeSitePlanId);
-    return sp ? { label: sp.name, imageDataURL: sp.imageDataURL } : null;
-  }
-  if (state.activeBuildingId && state.activeFloorId) {
-    const bld   = site.buildings?.find(b => b.id === state.activeBuildingId);
-    const floor = bld?.floors?.find(f => f.id === state.activeFloorId);
-    return floor ? { label: `${bld.name} — ${floor.name}`, imageDataURL: floor.imageDataURL } : null;
-  }
-  return null;
-}
+function getActivePlan() { return _getActivePlan(state, getActiveSite()); }
 
 function renderPlan() {
   const active = getActivePlan();
@@ -1486,15 +1594,7 @@ function updateActivePlanImage(dataURL) {
   }
 }
 
-function drawPlanCanvas() {
-  if (!plan.img) return;
-  const canvas = document.getElementById('plan-canvas');
-  const ctx    = canvas.getContext('2d');
-  canvas.width  = plan.img.width;
-  canvas.height = plan.img.height;
-  canvas.style.transform = `translate(${plan.offsetX}px,${plan.offsetY}px) scale(${plan.scale})`;
-  ctx.drawImage(plan.img, 0, 0);
-}
+function drawPlanCanvas() { _drawPlanCanvas(plan); }
 
 function renderPlanMarkers() {
   const svg  = document.getElementById('plan-overlay');
@@ -1517,9 +1617,17 @@ function renderPlanMarkers() {
     const isActive = photo.id === state.activePhotoId;
     const color = photo.type === '360' ? '#2980b9' : photo.type === 'panoramic' ? '#e07b20' : '#e94560';
 
+    const isGhost = planMoveGhostPos &&
+      photo.planX      === planMoveGhostPos.planX      &&
+      photo.planY      === planMoveGhostPos.planY      &&
+      photo.buildingId === planMoveGhostPos.buildingId &&
+      photo.floorId    === planMoveGhostPos.floorId    &&
+      photo.sitePlanId === planMoveGhostPos.sitePlanId;
+
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('class', 'plan-pin');
     g.setAttribute('transform', `translate(${sx},${sy})`);
+    if (isGhost) { g.setAttribute('opacity', '0.3'); g.setAttribute('pointer-events', 'none'); }
 
     // FOV wedge for plan markers
     const wedge = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -1544,11 +1652,11 @@ function renderPlanMarkers() {
 
     g.appendChild(wedge);
     g.appendChild(circle);
-    g.addEventListener('click', () => openViewer(photo.id));
+    g.addEventListener('click', () => { if (!planMoveGhostPos) openViewer(photo.id); });
     g.addEventListener('contextmenu', e => {
       e.preventDefault();
       e.stopPropagation();
-      showPlanPhotoContextMenu(e, photo);
+      if (!planMoveGhostPos) showPlanPhotoContextMenu(e, photo);
     });
     svg.appendChild(g);
   });
@@ -1568,11 +1676,22 @@ function showPlanPhotoContextMenu(e, photo) {
   menu.style.left = mx + 'px';
   menu.style.top  = my + 'px';
 
+  const siblingCount = findPhotoSiblings(photo).length;
   const items = [
-    { label: '↻ Orienter', action: () => startOrientPlanPhoto(photo) },
-    { label: '🗑 Supprimer', action: () => deletePhoto(photo.id) },
+    { label: '⬡ Déplacer le point',  action: () => startMovePlanPhoto(photo) },
+    { label: '↻ Orienter le point',  action: () => startOrientPlanPhoto(photo) },
+    { label: null },
+    { label: photoAddLabel(photo.type), action: () => addPhotoToPoint(photo) },
+    { label: null },
+    { label: `🗑 Supprimer${siblingCount > 1 ? ' cette photo' : ' le point'}`, action: () => deletePhoto(photo.id) },
   ];
   items.forEach(item => {
+    if (!item.action) {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-menu-sep';
+      menu.appendChild(sep);
+      return;
+    }
     const btn = document.createElement('button');
     btn.className = 'ctx-menu-btn';
     btn.textContent = item.label;
@@ -1621,19 +1740,25 @@ function startOrientPlanPhoto(photo) {
 
   const onClick = e => {
     e.stopPropagation();
-    const rect  = viewport.getBoundingClientRect();
-    const mx    = e.clientX - rect.left;
-    const my    = e.clientY - rect.top;
-    const planX = (mx - plan.offsetX) / plan.scale;
-    const planY = (my - plan.offsetY) / plan.scale;
-    const dx    = planX - photo.planX;
-    const dy    = planY - photo.planY;
+    const rect    = viewport.getBoundingClientRect();
+    const mx      = e.clientX - rect.left;
+    const my      = e.clientY - rect.top;
+    const planX   = (mx - plan.offsetX) / plan.scale;
+    const planY   = (my - plan.offsetY) / plan.scale;
+    const dx      = planX - photo.planX;
+    const dy      = planY - photo.planY;
     // dy est inversé vs coordonnées cartésiennes (y écran = bas = sud)
-    photo.bearing = ((Math.atan2(dx, -dy) * 180 / Math.PI) + 360) % 360;
+    const bearing = ((Math.atan2(dx, -dy) * 180 / Math.PI) + 360) % 360;
+    const site    = getActiveSite();
+    findPhotoSiblings(photo).forEach(id => {
+      const p = site?.photos.find(ph => ph.id === id);
+      if (p) p.bearing = bearing;
+    });
     cleanup();
     renderPlanMarkers();
     if (state.activePhotoId === photo.id)
-      document.getElementById('edit-photo-bearing').value = Math.round(photo.bearing);
+      document.getElementById('edit-photo-bearing').value = Math.round(bearing);
+    scheduleCacheSave();
   };
 
   viewport.style.cursor = 'crosshair';
@@ -1643,6 +1768,76 @@ function startOrientPlanPhoto(photo) {
     'Cliquez sur le plan pour définir la direction de la photo.',
     [{ label: 'Annuler', primary: false, action: cleanup }]
   );
+}
+
+function startMovePlanPhoto(photo) {
+  const site = getActiveSite();
+  if (!site) return;
+
+  movePlanPhotoSiblings = findPhotoSiblings(photo)
+    .map(id => site.photos.find(p => p.id === id))
+    .filter(Boolean);
+
+  planMoveGhostPos = {
+    planX: photo.planX, planY: photo.planY,
+    buildingId: photo.buildingId, floorId: photo.floorId, sitePlanId: photo.sitePlanId,
+  };
+  renderPlanMarkers();
+
+  const viewport = document.getElementById('plan-viewport');
+  let lastDragMoved = false;
+
+  const onMouseDown = () => { lastDragMoved = false; };
+  const onMouseMove = () => { lastDragMoved = true; };
+
+  const cleanup = () => {
+    viewport.style.cursor = '';
+    viewport.removeEventListener('mousedown', onMouseDown);
+    viewport.removeEventListener('mousemove', onMouseMove);
+    viewport.removeEventListener('click', onClick, true);
+    planMoveGhostPos      = null;
+    movePlanPhotoSiblings = [];
+    movePlanPhotoCleanup  = null;
+    clearStepBanner();
+    renderPlanMarkers();
+  };
+
+  const onClick = e => {
+    if (lastDragMoved) return; // ignore drag-release
+    e.stopPropagation();
+    const rect     = viewport.getBoundingClientRect();
+    const mx       = e.clientX - rect.left;
+    const my       = e.clientY - rect.top;
+    const newPlanX = (mx - plan.offsetX) / plan.scale;
+    const newPlanY = (my - plan.offsetY) / plan.scale;
+    movePlanPhotoSiblings.forEach(p => { p.planX = newPlanX; p.planY = newPlanY; });
+    cleanup();
+    scheduleCacheSave();
+  };
+
+  movePlanPhotoCleanup = cleanup;
+  viewport.style.cursor = 'crosshair';
+  viewport.addEventListener('mousedown', onMouseDown);
+  viewport.addEventListener('mousemove', onMouseMove);
+  viewport.addEventListener('click', onClick, true);
+  setStepBanner(
+    'Cliquez sur le plan pour déplacer ce point (toutes ses photos seront déplacées).',
+    [{ label: 'Annuler', primary: false, action: cleanup }]
+  );
+}
+
+function photoAddLabel(type) {
+  if (type === 'panoramic') return '🌅 Ajouter une photo panoramique';
+  if (type === '360')       return '🔵 Ajouter une photo 360°';
+  return '📷 Ajouter une photo normale';
+}
+
+function addPhotoToPoint(photo) {
+  if (photo.lat != null) {
+    startAddPhotoAt(photo.lat, photo.lon, photo.type);
+  } else {
+    startAddPhotoOnPlan(photo.planX, photo.planY, photo.type);
+  }
 }
 
 function initPlanEvents() {
@@ -1785,6 +1980,15 @@ async function confirmAddPhoto() {
   pendingPhotoPos  = null;
   pendingPhotoType = null;
 
+  // Inherit bearing from existing photos at the same point, if any
+  const existingAtPoint = site.photos.filter(p => {
+    if (pos.lat != null) return p.lat === pos.lat && p.lon === pos.lon;
+    return p.planX === pos.planX && p.planY === pos.planY &&
+           p.buildingId === pos.buildingId && p.floorId === pos.floorId &&
+           p.sitePlanId === pos.sitePlanId;
+  });
+  const inheritedBearing = existingAtPoint.length > 0 ? (existingAtPoint[0].bearing ?? 0) : 0;
+
   const added = [];
   for (let i = 0; i < pendingPhotoFiles.length; i++) {
     const file    = pendingPhotoFiles[i];
@@ -1793,7 +1997,7 @@ async function confirmAddPhoto() {
     const title   = baseTitle
       ? (multi ? `${baseTitle} ${i + 1}` : baseTitle)
       : file.name.replace(/\.[^.]+$/, '');
-    const photo   = { id: uid(), type, title, description: desc, dataURL, thumbnail: thumb, bearing: 0, ...pos };
+    const photo   = { id: uid(), type, title, description: desc, dataURL, thumbnail: thumb, bearing: inheritedBearing, ...pos };
     site.photos.push(photo);
     added.push(photo);
   }
@@ -1801,7 +2005,7 @@ async function confirmAddPhoto() {
 
   if (added[0].lat != null) added.forEach(p => addPhotoMarker(p));
   else renderPlanMarkers();
-  openViewer(added[0].id, added.map(p => p.id));
+  openViewer(added[0].id); // findPhotoSiblings inclut anciens + nouveaux
   scheduleCacheSave();
 }
 
@@ -1825,16 +2029,7 @@ function deletePhoto(photoId) {
 
 // ===== VIEWER =====
 function findPhotoSiblings(photo) {
-  const site = getActiveSite();
-  if (!site) return [photo.id];
-  if (photo.lat != null) {
-    return site.photos.filter(p => p.lat === photo.lat && p.lon === photo.lon).map(p => p.id);
-  }
-  return site.photos.filter(p =>
-    p.planX      === photo.planX      && p.planY      === photo.planY &&
-    p.buildingId === photo.buildingId && p.floorId    === photo.floorId &&
-    p.sitePlanId === photo.sitePlanId
-  ).map(p => p.id);
+  return _findPhotoSiblings(photo, getActiveSite()?.photos ?? []);
 }
 
 function openViewer(photoId, gallery = null) {
@@ -1879,14 +2074,7 @@ function _renderViewerPhoto(photo) {
   document.getElementById('edit-photo-bearing').value = Math.round(photo.bearing ?? 0);
 }
 
-function updateGalleryNav() {
-  const multi = viewerGallery.length > 1;
-  document.getElementById('btn-viewer-prev').classList.toggle('hidden', !multi);
-  document.getElementById('btn-viewer-next').classList.toggle('hidden', !multi);
-  const count = document.getElementById('viewer-gallery-count');
-  count.classList.toggle('hidden', !multi);
-  if (multi) count.textContent = `${viewerGalleryIdx + 1} / ${viewerGallery.length}`;
-}
+function updateGalleryNav() { _updateGalleryNav(viewerGallery, viewerGalleryIdx); }
 
 function navigateGallery(delta) {
   const site = getActiveSite();
@@ -2005,11 +2193,36 @@ function init() {
   document.getElementById('btn-load-site').addEventListener('click', () => {
     const inp = document.createElement('input');
     inp.type = 'file'; inp.accept = '.cado,.json';
-    inp.onchange = e => { if (e.target.files[0]) loadSiteFromFile(e.target.files[0]); };
+    inp.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (state.activeSiteId) {
+        pendingLoadFile = file;
+        document.getElementById('close-site-name').textContent = getActiveSite()?.name || 'ce site';
+        showModal('modal-close-site');
+      } else {
+        loadSiteFromFile(file);
+      }
+    };
     inp.click();
   });
-  document.getElementById('btn-save-site').addEventListener('click',   saveSite);
-  document.getElementById('btn-export-site').addEventListener('click', saveSite);
+  document.getElementById('btn-save-site').addEventListener('click', saveSite);
+  document.getElementById('btn-close-site').addEventListener('click', closeSite);
+  document.getElementById('link-cadotour').addEventListener('click', e => {
+    if (!state.activeSiteId) return;
+    e.preventDefault();
+    pendingNavigateUrl = 'cadotour.html';
+    document.getElementById('close-site-name').textContent = getActiveSite()?.name || 'ce site';
+    showModal('modal-close-site');
+  });
+
+  document.getElementById('btn-close-save').addEventListener('click',    () => _doCloseSite(true));
+  document.getElementById('btn-close-discard').addEventListener('click', () => _doCloseSite(false));
+  document.getElementById('btn-close-cancel').addEventListener('click',  () => {
+    pendingLoadFile    = null;
+    pendingNavigateUrl = null;
+    hideModal('modal-close-site');
+  });
 
   // ---- Sidebar ----
   document.getElementById('btn-deselect-site').addEventListener('click', deselectSite);
