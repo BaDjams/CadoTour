@@ -2072,7 +2072,7 @@ function _renderViewerPhoto(photo) {
   document.getElementById('edit-photo-desc').value  = photo.description || '';
 
   const bearingRow = document.getElementById('bearing-row');
-  if ((photo.type === 'classic' || photo.type === '360') && !photo.floorId) {
+  if ((photo.type === 'normal' || photo.type === 'panoramic' || photo.type === '360') && !photo.floorId) {
     bearingRow.classList.remove('hidden');
     document.getElementById('edit-photo-bearing').value = photo.bearing ?? 0;
   } else {
@@ -2103,19 +2103,13 @@ function applyEditorChanges() {
 function applyBearingChange() {
   const site  = getActiveSite();
   const photo = site?.photos.find(p => p.id === state.activePhotoId);
-  if (!photo || photo.type === 'group' || photo.floorId) return;
+  if (!photo || photo.floorId) return;
 
   const raw = document.getElementById('edit-photo-bearing').value;
   photo.bearing = raw === '' ? 0 : ((parseFloat(raw) % 360) + 360) % 360;
   document.getElementById('edit-photo-bearing').value = Math.round(photo.bearing);
 
   refreshPhotoMarker(photo.id);
-  if (photo.type === 'classic') {
-    setTimeout(() => {
-      const m = photoMarkers[photo.id];
-      if (m) initBearingDrag(m, photo.id);
-    }, 0);
-  }
 }
 
 // ===== SITE FORM HELPERS =====
