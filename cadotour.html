@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CadoTour</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css" />
+  <script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ======= TOP BAR ======= -->
+<header id="topbar">
+  <span id="app-title">CadoTour</span>
+  <div id="topbar-actions">
+    <a href="index.html" class="btn-secondary" style="text-decoration:none">✏ CadoCreator</a>
+    <button id="btn-load-site" class="btn-secondary">📂 Charger un site</button>
+    <button id="btn-close-site" class="btn-secondary" disabled>Fermer le site</button>
+  </div>
+</header>
+
+<!-- ======= MAIN LAYOUT ======= -->
+<div id="main-layout">
+
+  <!-- LEFT SIDEBAR -->
+  <aside id="sidebar">
+    <div id="site-header">
+      <span id="site-header-icon"></span>
+      <span id="site-header-name">Aucun site chargé</span>
+    </div>
+    <nav id="sidebar-nav"></nav>
+  </aside>
+
+  <!-- CENTER: map or plan -->
+  <main id="center-panel">
+
+    <!-- Leaflet map -->
+    <div id="map-container">
+      <div id="map"></div>
+    </div>
+
+    <!-- Plan viewer (building floor or site plan) -->
+    <div id="plan-container" class="hidden">
+      <div id="plan-toolbar">
+        <span id="plan-floor-name">Plan</span>
+      </div>
+      <div id="plan-viewport">
+        <canvas id="plan-canvas"></canvas>
+        <svg id="plan-overlay"></svg>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- RIGHT PANEL: photo viewer (read-only) -->
+  <aside id="viewer-panel" class="hidden">
+    <div id="viewer-header">
+      <span id="viewer-title">Photo</span>
+      <button id="btn-close-viewer" class="btn-icon">✕</button>
+    </div>
+    <div id="viewer-media-wrap">
+      <div id="classic-viewer" class="hidden">
+        <img id="classic-photo-img" src="" alt="Photo" />
+        <div id="classic-photo-caption"></div>
+      </div>
+      <div id="panorama-viewer" class="hidden">
+        <div id="pannellum-container"></div>
+      </div>
+      <button id="btn-viewer-fullscreen" class="viewer-overlay-btn viewer-fs-btn" title="Plein écran">⛶</button>
+      <button id="btn-viewer-prev" class="viewer-overlay-btn viewer-nav-prev hidden" title="Précédent">‹</button>
+      <button id="btn-viewer-next" class="viewer-overlay-btn viewer-nav-next hidden" title="Suivant">›</button>
+      <div id="viewer-gallery-count" class="viewer-gallery-count hidden"></div>
+    </div>
+    <div id="photo-editor">
+      <div class="editor-row" id="viewer-desc-row" style="display:none">
+        <label>Description</label>
+        <p id="viewer-desc-text" style="margin:4px 0;color:var(--color-text-muted);font-size:13px;line-height:1.5"></p>
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+<!-- Close site confirmation -->
+<div id="modal-close-site" class="modal hidden">
+  <div class="modal-box">
+    <h2>Fermer le site</h2>
+    <p>Fermer <strong id="close-site-name"></strong> ?</p>
+    <p style="font-size:12px;color:var(--color-text-muted);margin-top:4px">Les données ne seront plus en mémoire.</p>
+    <div class="modal-actions">
+      <button id="btn-close-confirm" class="btn-danger">Fermer</button>
+      <button id="btn-close-cancel"  class="btn-secondary">Annuler</button>
+    </div>
+  </div>
+</div>
+<div id="modal-backdrop" class="hidden"></div>
+
+<script type="module" src="cadotour.js"></script>
+</body>
+</html>
