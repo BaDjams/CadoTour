@@ -338,9 +338,9 @@ function loadSiteFromFile(file) {
       data.contacts    = data.contacts    || [];
       data.icon        = data.icon        || '🏛';
       data.illustration = data.illustration || null;
-      // Ensure classic photos on map have bearing
+      // Ensure classic and 360° photos on map have bearing
       (data.photos || []).forEach(p => {
-        if (p.type === 'classic' && !p.floorId && p.bearing == null) p.bearing = 0;
+        if ((p.type === 'classic' || p.type === '360') && !p.floorId && p.bearing == null) p.bearing = 0;
       });
 
       // Avoid duplicates by id
@@ -904,7 +904,7 @@ async function confirmAddPhoto() {
     thumbnail,
     ...pendingPhotoPos,
     ...(type === 'group'   ? { photos: [] }  : {}),
-    ...(type === 'classic' && !pendingPhotoPos.floorId ? { bearing: 0 } : {}),
+    ...((type === 'classic' || type === '360') && !pendingPhotoPos.floorId ? { bearing: 0 } : {}),
   };
 
   site.photos.push(photo);
@@ -971,7 +971,7 @@ function openViewer(photoId) {
   document.getElementById('edit-photo-desc').value  = photo.description || '';
 
   const bearingRow = document.getElementById('bearing-row');
-  if (photo.type === 'classic' && !photo.floorId) {
+  if ((photo.type === 'classic' || photo.type === '360') && !photo.floorId) {
     bearingRow.classList.remove('hidden');
     document.getElementById('edit-photo-bearing').value = photo.bearing ?? 0;
   } else {
@@ -1092,17 +1092,19 @@ function applyEditorChanges() {
 function applyBearingChange() {
   const site  = getActiveSite();
   const photo = site?.photos.find(p => p.id === state.activePhotoId);
-  if (!photo || photo.type !== 'classic') return;
+  if (!photo || photo.type === 'group' || photo.floorId) return;
 
   const raw = document.getElementById('edit-photo-bearing').value;
   photo.bearing = raw === '' ? 0 : ((parseFloat(raw) % 360) + 360) % 360;
   document.getElementById('edit-photo-bearing').value = Math.round(photo.bearing);
 
   refreshPhotoMarker(photo.id);
-  setTimeout(() => {
-    const m = photoMarkers[photo.id];
-    if (m) initBearingDrag(m, photo.id);
-  }, 0);
+  if (photo.type === 'classic') {
+    setTimeout(() => {
+      const m = photoMarkers[photo.id];
+      if (m) initBearingDrag(m, photo.id);
+    }, 0);
+  }
 }
 
 // ===== SITE FORM HELPERS =====
@@ -1243,6 +1245,12 @@ function init() {
   document.getElementById('btn-clear-bearing').addEventListener('click', () => {
     document.getElementById('edit-photo-bearing').value = 0;
     applyBearingChange();
+  });
+  document.querySelectorAll('.dir-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.getElementById('edit-photo-bearing').value = btn.dataset.bearing;
+      applyBearingChange();
+    });
   });
 
   document.getElementById('btn-edit-photo-file').addEventListener('click', () => {
