@@ -955,6 +955,31 @@ textarea.input-field { resize: vertical; min-height: 60px; }
   padding: 4px 14px;
 }
 
+/* ===== MBTILES PANEL ===== */
+#mbtiles-panel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.mbtiles-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.mbtiles-info-bar {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+/* Couleurs de statut injectées dynamiquement par tileSource.js */
+.text-green-600  { color: #22c55e !important; }
+.text-gray-400   { color: var(--color-text-muted) !important; }
+.text-red-600    { color: var(--color-danger) !important; }
+.text-orange-500 { color: var(--color-panoramic) !important; }
+.text-xs   { font-size: 11px; }
+.font-bold { font-weight: 700; }
+
 /* ===== UTILITIES ===== */
 .hidden { display: none !important; }
 
