@@ -900,8 +900,12 @@ function selectSite(siteId) {
   const site = getActiveSite();
   if (site) {
     (site.buildings || []).forEach(b => addBuildingMarker(b));
-    (site.photos || []).filter(p => !p.floorId && !p.sitePlanId && p.lat != null)
-      .forEach(p => addPhotoMarker(p));
+    const mapPhotos = (site.photos || []).filter(p => !p.floorId && !p.sitePlanId && p.lat != null);
+    const seenPos = new Set();
+    mapPhotos.forEach(p => {
+      const key = `${p.lat},${p.lon}`;
+      if (!seenPos.has(key)) { seenPos.add(key); addPhotoMarker(p); }
+    });
     if (site.perimeter)   renderSitePerimeter(site);
     if (site.accessArrow) renderAccessArrow(site);
   }
@@ -1065,24 +1069,21 @@ function clearBuildingMarkers() {
 }
 
 // ===== PHOTO MARKERS =====
-function makePhotoIcon(type, bearing, isActive) {
+function makePhotoIcon(type, bearing, isActive, count = 1) {
   const rot = ((bearing || 0) + 360) % 360;
   let svgInner, size, anchor;
 
   if (type === 'normal') {
-    // 45° wedge pointing up
     size = 44; anchor = 22;
     svgInner = `
       <path d="M0,0 L-6.9,-16.6 A18,18,0,0,1,6.9,-16.6 Z" fill="#e94560" opacity="0.8"/>
       <circle r="6" fill="#e94560" stroke="white" stroke-width="${isActive ? 2.5 : 1.5}"/>`;
   } else if (type === 'panoramic') {
-    // 120° wedge pointing up
     size = 48; anchor = 24;
     svgInner = `
       <path d="M0,0 L-15.6,-9 A18,18,0,0,1,15.6,-9 Z" fill="#e07b20" opacity="0.75"/>
       <circle r="6" fill="#e07b20" stroke="white" stroke-width="${isActive ? 2.5 : 1.5}"/>`;
   } else {
-    // 360°: full circle + north arrow
     size = 40; anchor = 20;
     svgInner = `
       <circle r="15" fill="none" stroke="#2980b9" stroke-width="2.5" opacity="0.85"/>
@@ -1091,8 +1092,12 @@ function makePhotoIcon(type, bearing, isActive) {
   }
 
   const glow = isActive ? 'drop-shadow(0 0 6px rgba(255,255,255,0.8))' : '';
-  const html = `<div style="width:${size}px;height:${size}px;transform:rotate(${rot}deg);transform-origin:${anchor}px ${anchor}px;filter:drop-shadow(0 1px 4px rgba(0,0,0,0.6)) ${glow}">
-    <svg width="${size}" height="${size}" viewBox="-${anchor} -${anchor} ${size} ${size}" style="overflow:visible">${svgInner}</svg>
+  const badge = count > 1 ? `<span class="photo-count-badge">${count}</span>` : '';
+  const html = `<div style="position:relative;width:${size}px;height:${size}px">
+    <div style="width:${size}px;height:${size}px;transform:rotate(${rot}deg);transform-origin:${anchor}px ${anchor}px;filter:drop-shadow(0 1px 4px rgba(0,0,0,0.6)) ${glow}">
+      <svg width="${size}" height="${size}" viewBox="-${anchor} -${anchor} ${size} ${size}" style="overflow:visible">${svgInner}</svg>
+    </div>
+    ${badge}
   </div>`;
 
   return L.divIcon({
@@ -1105,8 +1110,9 @@ function makePhotoIcon(type, bearing, isActive) {
 
 function addPhotoMarker(photo) {
   if (!map) return;
-  const isActive = photo.id === state.activePhotoId;
-  const icon = makePhotoIcon(photo.type, photo.bearing, isActive);
+  const siblings = findPhotoSiblings(photo);
+  const isActive = siblings.includes(state.activePhotoId);
+  const icon = makePhotoIcon(photo.type, photo.bearing, isActive, siblings.length);
 
   const m = L.marker([photo.lat, photo.lon], { icon })
     .addTo(map)
@@ -1156,9 +1162,9 @@ function refreshMarkerActive() {
   const site = getActiveSite();
   Object.entries(photoMarkers).forEach(([id, m]) => {
     const photo = site?.photos.find(p => p.id === id);
-    if (photo) {
-      m.setIcon(makePhotoIcon(photo.type, photo.bearing, id === state.activePhotoId));
-    }
+    if (!photo) return;
+    const siblings = findPhotoSiblings(photo);
+    m.setIcon(makePhotoIcon(photo.type, photo.bearing, siblings.includes(state.activePhotoId), siblings.length));
   });
 }
 
@@ -1187,9 +1193,10 @@ function commitMovePhoto(latlng) {
   const photo = site?.photos.find(p => p.id === movePhotoId);
   if (photo) {
     const oldLat = photo.lat, oldLon = photo.lon;
-    site.photos
-      .filter(p => p.lat === oldLat && p.lon === oldLon)
-      .forEach(p => { p.lat = latlng.lat; p.lon = latlng.lng; refreshPhotoMarker(p.id); });
+    const siblings = site.photos.filter(p => p.lat === oldLat && p.lon === oldLon);
+    siblings.forEach(p => { p.lat = latlng.lat; p.lon = latlng.lng; });
+    const withMarker = siblings.find(p => photoMarkers[p.id]);
+    if (withMarker) refreshPhotoMarker(withMarker.id);
   }
   interactionMode = null;
   movePhotoId = null;
@@ -1303,9 +1310,10 @@ function commitOrientPhoto(latlng) {
     const dx = latlng.lng - photo.lon;
     const dy = latlng.lat - photo.lat;
     const bearing = ((Math.atan2(dx, dy) * 180 / Math.PI) + 360) % 360;
-    site.photos
-      .filter(p => p.lat === photo.lat && p.lon === photo.lon)
-      .forEach(p => { p.bearing = bearing; refreshPhotoMarker(p.id); });
+    const samePosPhotos = site.photos.filter(p => p.lat === photo.lat && p.lon === photo.lon);
+    samePosPhotos.forEach(p => { p.bearing = bearing; });
+    const withMarker = samePosPhotos.find(p => photoMarkers[p.id]);
+    if (withMarker) refreshPhotoMarker(withMarker.id);
     if (state.activePhotoId === photo.id) {
       document.getElementById('edit-photo-bearing').value = Math.round(bearing);
     }
@@ -1611,10 +1619,16 @@ function renderPlanMarkers() {
     );
   }
 
+  const seenPlanPos = new Set();
   photos.forEach(photo => {
+    const posKey = `${photo.planX},${photo.planY}`;
+    if (seenPlanPos.has(posKey)) return;
+    seenPlanPos.add(posKey);
+
     const sx = photo.planX * plan.scale + plan.offsetX;
     const sy = photo.planY * plan.scale + plan.offsetY;
-    const isActive = photo.id === state.activePhotoId;
+    const siblings = findPhotoSiblings(photo);
+    const isActive = siblings.includes(state.activePhotoId);
     const color = photo.type === '360' ? '#2980b9' : photo.type === 'panoramic' ? '#e07b20' : '#e94560';
 
     const isGhost = planMoveGhostPos &&
@@ -1629,7 +1643,6 @@ function renderPlanMarkers() {
     g.setAttribute('transform', `translate(${sx},${sy})`);
     if (isGhost) { g.setAttribute('opacity', '0.3'); g.setAttribute('pointer-events', 'none'); }
 
-    // FOV wedge for plan markers
     const wedge = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     const rot = photo.bearing || 0;
     if (photo.type === 'normal') {
@@ -1652,6 +1665,25 @@ function renderPlanMarkers() {
 
     g.appendChild(wedge);
     g.appendChild(circle);
+
+    if (siblings.length > 1) {
+      const br = 6;
+      const r = isActive ? 7 : 5.5;
+      const bx = r + br - 1, by = -(r + br - 1);
+      const badgeBg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      badgeBg.setAttribute('cx', bx); badgeBg.setAttribute('cy', by);
+      badgeBg.setAttribute('r', br);
+      badgeBg.setAttribute('fill', 'white');
+      badgeBg.setAttribute('stroke', 'rgba(0,0,0,0.4)'); badgeBg.setAttribute('stroke-width', '1');
+      const badgeTxt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      badgeTxt.setAttribute('x', bx); badgeTxt.setAttribute('y', by);
+      badgeTxt.setAttribute('text-anchor', 'middle'); badgeTxt.setAttribute('dominant-baseline', 'central');
+      badgeTxt.setAttribute('font-size', '8'); badgeTxt.setAttribute('font-weight', 'bold');
+      badgeTxt.setAttribute('fill', '#222');
+      badgeTxt.textContent = siblings.length;
+      g.appendChild(badgeBg); g.appendChild(badgeTxt);
+    }
+
     g.addEventListener('click', () => { if (!planMoveGhostPos) openViewer(photo.id); });
     g.addEventListener('contextmenu', e => {
       e.preventDefault();
@@ -2003,8 +2035,10 @@ async function confirmAddPhoto() {
   }
   pendingPhotoFiles = [];
 
-  if (added[0].lat != null) added.forEach(p => addPhotoMarker(p));
-  else renderPlanMarkers();
+  if (added[0].lat != null) {
+    const hasMarker = existingAtPoint.some(p => photoMarkers[p.id]);
+    if (!hasMarker) addPhotoMarker(added[0]);
+  } else renderPlanMarkers();
   openViewer(added[0].id); // findPhotoSiblings inclut anciens + nouveaux
   scheduleCacheSave();
 }
@@ -2012,8 +2046,14 @@ async function confirmAddPhoto() {
 function deletePhoto(photoId) {
   const site = getActiveSite();
   if (!site || !confirm('Supprimer cette photo ?')) return;
+  const photo = site.photos.find(p => p.id === photoId);
+  const hadMarker = photo?.lat != null && !!photoMarkers[photoId];
   site.photos = site.photos.filter(p => p.id !== photoId);
   removePhotoMarker(photoId);
+  if (hadMarker) {
+    const nextSibling = site.photos.find(p => p.lat === photo.lat && p.lon === photo.lon);
+    if (nextSibling) addPhotoMarker(nextSibling);
+  }
   renderPlanMarkers();
   scheduleCacheSave();
 
@@ -2071,13 +2111,8 @@ function _renderViewerPhoto(photo) {
   document.getElementById('edit-photo-title').value = photo.title || '';
   document.getElementById('edit-photo-desc').value  = photo.description || '';
 
-  const bearingRow = document.getElementById('bearing-row');
-  if ((photo.type === 'normal' || photo.type === 'panoramic' || photo.type === '360') && !photo.floorId) {
-    bearingRow.classList.remove('hidden');
-    document.getElementById('edit-photo-bearing').value = photo.bearing ?? 0;
-  } else {
-    bearingRow.classList.add('hidden');
-  }
+  document.getElementById('bearing-row').classList.remove('hidden');
+  document.getElementById('edit-photo-bearing').value = photo.bearing ?? 0;
 }
 
 function closeViewer() {
@@ -2088,6 +2123,21 @@ function closeViewer() {
   if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
   refreshMarkerActive();
   renderPlanMarkers();
+}
+
+function updateGalleryNav() { _updateGalleryNav(viewerGallery, viewerGalleryIdx); }
+
+function navigateGallery(delta) {
+  const site = getActiveSite();
+  if (!site || !viewerGallery.length) return;
+  viewerGalleryIdx = ((viewerGalleryIdx + delta) + viewerGallery.length) % viewerGallery.length;
+  const photo = site.photos.find(p => p.id === viewerGallery[viewerGalleryIdx]);
+  if (!photo) return;
+  state.activePhotoId = photo.id;
+  refreshMarkerActive();
+  renderPlanMarkers();
+  _renderViewerPhoto(photo);
+  updateGalleryNav();
 }
 
 // ===== PHOTO EDITOR =====
@@ -2103,13 +2153,14 @@ function applyEditorChanges() {
 function applyBearingChange() {
   const site  = getActiveSite();
   const photo = site?.photos.find(p => p.id === state.activePhotoId);
-  if (!photo || photo.floorId) return;
+  if (!photo) return;
 
   const raw = document.getElementById('edit-photo-bearing').value;
   photo.bearing = raw === '' ? 0 : ((parseFloat(raw) % 360) + 360) % 360;
   document.getElementById('edit-photo-bearing').value = Math.round(photo.bearing);
 
-  refreshPhotoMarker(photo.id);
+  if (photo.lat != null) refreshPhotoMarker(photo.id);
+  else renderPlanMarkers();
 }
 
 // ===== SITE FORM HELPERS =====
@@ -2281,11 +2332,6 @@ function init() {
   document.getElementById('btn-close-viewer').addEventListener('click', closeViewer);
   document.getElementById('edit-photo-title').addEventListener('blur', applyEditorChanges);
   document.getElementById('edit-photo-desc').addEventListener('blur', applyEditorChanges);
-  document.getElementById('edit-photo-bearing').addEventListener('change', applyBearingChange);
-  document.getElementById('btn-clear-bearing').addEventListener('click', () => {
-    document.getElementById('edit-photo-bearing').value = 0;
-    applyBearingChange();
-  });
   document.querySelectorAll('.dir-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.getElementById('edit-photo-bearing').value = btn.dataset.bearing;

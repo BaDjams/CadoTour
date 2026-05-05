@@ -133,7 +133,7 @@ function clearBuildingMarkers() {
 }
 
 // ===== PHOTO MARKERS =====
-function makePhotoIcon(type, bearing, isActive) {
+function makePhotoIcon(type, bearing, isActive, count = 1) {
   const rot = ((bearing || 0) + 360) % 360;
   let svgInner, size, anchor;
   if (type === 'normal') {
@@ -148,23 +148,23 @@ function makePhotoIcon(type, bearing, isActive) {
     size = 40; anchor = 20;
     svgInner = `<circle r="17" fill="#2980b9" opacity="0.35" stroke="#2980b9" stroke-width="1.5"/>
                 <circle r="6" fill="#2980b9" stroke="white" stroke-width="${isActive ? 2.5 : 1.5}"/>`;
-    return L.divIcon({
-      className: '',
-      html: `<svg width="${size}" height="${size}" viewBox="-${anchor} -${anchor} ${size} ${size}">${svgInner}</svg>`,
-      iconSize: [size, size], iconAnchor: [anchor, anchor],
-    });
   }
+  const rotateSvg = type !== '360' ? `style="transform:rotate(${rot}deg)"` : '';
+  const badge = count > 1 ? `<span class="photo-count-badge">${count}</span>` : '';
   return L.divIcon({
     className: '',
-    html: `<svg width="${size}" height="${size}" viewBox="-${anchor} -${anchor} ${size} ${size}"
-             style="transform:rotate(${rot}deg)">${svgInner}</svg>`,
+    html: `<div style="position:relative;width:${size}px;height:${size}px">
+             <svg width="${size}" height="${size}" viewBox="-${anchor} -${anchor} ${size} ${size}" ${rotateSvg}>${svgInner}</svg>
+             ${badge}
+           </div>`,
     iconSize: [size, size], iconAnchor: [anchor, anchor],
   });
 }
 
 function addPhotoMarker(photo) {
   if (photo.lat == null) return;
-  const m = L.marker([photo.lat, photo.lon], { icon: makePhotoIcon(photo.type, photo.bearing, false) })
+  const count = findPhotoSiblings(photo).length;
+  const m = L.marker([photo.lat, photo.lon], { icon: makePhotoIcon(photo.type, photo.bearing, false, count) })
     .addTo(map)
     .on('click', e => { L.DomEvent.stopPropagation(e); openViewer(photo.id); });
   photoMarkers[photo.id] = m;
@@ -181,8 +181,8 @@ function refreshMarkerActive() {
   Object.keys(photoMarkers).forEach(id => {
     const p = site.photos.find(ph => ph.id === id);
     if (!p) return;
-    const isActive = findPhotoSiblings(p).includes(state.activePhotoId);
-    photoMarkers[id].setIcon(makePhotoIcon(p.type, p.bearing, isActive));
+    const siblings = findPhotoSiblings(p);
+    photoMarkers[id].setIcon(makePhotoIcon(p.type, p.bearing, siblings.includes(state.activePhotoId), siblings.length));
   });
 }
 
@@ -434,6 +434,26 @@ function renderPlanMarkers() {
 
     g.appendChild(wedge);
     g.appendChild(circle);
+
+    const siblings = findPhotoSiblings(photo);
+    if (siblings.length > 1) {
+      const br = 6;
+      const r = isActive ? 7 : 5.5;
+      const bx = r + br - 1, by = -(r + br - 1);
+      const badgeBg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      badgeBg.setAttribute('cx', bx); badgeBg.setAttribute('cy', by);
+      badgeBg.setAttribute('r', br);
+      badgeBg.setAttribute('fill', 'white');
+      badgeBg.setAttribute('stroke', 'rgba(0,0,0,0.4)'); badgeBg.setAttribute('stroke-width', '1');
+      const badgeTxt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      badgeTxt.setAttribute('x', bx); badgeTxt.setAttribute('y', by);
+      badgeTxt.setAttribute('text-anchor', 'middle'); badgeTxt.setAttribute('dominant-baseline', 'central');
+      badgeTxt.setAttribute('font-size', '8'); badgeTxt.setAttribute('font-weight', 'bold');
+      badgeTxt.setAttribute('fill', '#222');
+      badgeTxt.textContent = siblings.length;
+      g.appendChild(badgeBg); g.appendChild(badgeTxt);
+    }
+
     g.addEventListener('click', () => openViewer(photo.id));
     svg.appendChild(g);
   });
