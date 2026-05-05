@@ -52,7 +52,7 @@ function initMap() {
   const hybrid = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
     attribution: '© Google', maxZoom: 22,
   });
-  hybrid.addTo(map);
+  osm.addTo(map);
   baseLayers = { 'OpenStreetMap': osm, 'Hybride': hybrid };
   L.control.layers(baseLayers).addTo(map);
 
