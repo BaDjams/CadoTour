@@ -92,6 +92,8 @@ let state = {
 
 // ===== MAP =====
 let map = null;
+let baseLayers      = {};
+let mbtilesLayer    = null;
 let siteMarkers     = {};   // siteId      -> L.Marker
 let buildingMarkers = {};   // buildingId  -> L.Marker
 let photoMarkers    = {};   // photoId     -> L.Marker
@@ -281,11 +283,40 @@ function initMap() {
 
   map = L.map('map', { layers: [osmLayer] }).setView([46.6, 2.3], 6);
 
-  L.control.layers(
-    { 'OpenStreetMap': osmLayer, 'Google Hybride': googleHybridLayer },
-    {},
-    { position: 'topright' }
-  ).addTo(map);
+  baseLayers = { 'OpenStreetMap': osmLayer, 'Google Hybride': googleHybridLayer };
+  L.control.layers(baseLayers, {}, { position: 'topright' }).addTo(map);
+
+  const MbtilesLayer = L.TileLayer.extend({
+    createTile(coords, done) {
+      const tile = document.createElement('img');
+      const url = window.tileSourceReadTile(coords.x, coords.y, coords.z);
+      if (url) {
+        tile.src = url;
+        tile.onload  = () => { URL.revokeObjectURL(url); done(null, tile); };
+        tile.onerror = () => { URL.revokeObjectURL(url); done(null, tile); };
+      } else {
+        done(null, tile);
+      }
+      return tile;
+    }
+  });
+
+  window.tileSourceOnChange = function(info) {
+    if (mbtilesLayer) { map.removeLayer(mbtilesLayer); mbtilesLayer = null; }
+    if (info) {
+      Object.values(baseLayers).forEach(l => { if (map.hasLayer(l)) map.removeLayer(l); });
+      const zooms = window.tileSourceGetZooms();
+      mbtilesLayer = new MbtilesLayer('', { minZoom: zooms[0], maxZoom: zooms[zooms.length - 1] });
+      mbtilesLayer.addTo(map);
+      if (info.bounds) {
+        const [w, s, e, n] = info.bounds;
+        map.fitBounds([[s, w], [n, e]]);
+      }
+    } else {
+      const def = baseLayers['OpenStreetMap'] || Object.values(baseLayers)[0];
+      if (def && !map.hasLayer(def)) def.addTo(map);
+    }
+  };
 
   map.on('contextmenu', onMapRightClick);
   map.on('click', onMapClick);
