@@ -175,6 +175,8 @@ let searchTimer = null;
 let stepQueue = [];
 
 // ===== CONSTANTS =====
+const CLUSTER_ZOOM_THRESHOLD = 16;
+
 const SITE_ICONS = [
   '🏘','🏙','🏭','🏬','🏥','🏫','🌾','🌲','🏛','🚂',
   '✈','⚓','🏖','🏔','🌊','⚡','🎡','🏟','🏕','🔥',
@@ -305,6 +307,7 @@ function initMap() {
 
   map.on('contextmenu', onMapRightClick);
   map.on('click', onMapClick);
+  map.on('zoomend', updateMarkersVisibility);
 }
 
 // ===== MAP CLICK =====
@@ -888,6 +891,8 @@ function selectSite(siteId) {
     if (site.accessArrow) renderAccessArrow(site);
   }
 
+  updateMarkersVisibility();
+
   renderSidebar();
   switchViewMode('map');
   updateTopBarButtons();
@@ -1141,6 +1146,16 @@ function refreshMarkerActive() {
     if (!point) return;
     m.setIcon(makePointIcon(point.type, point.bearing, id === state.activePointId, point.photos.length));
   });
+}
+
+// ===== CLUSTER VISIBILITY =====
+function updateMarkersVisibility() {
+  if (!map || !state.activeSiteId) return;
+  const clustered = map.getZoom() < CLUSTER_ZOOM_THRESHOLD;
+  Object.values(pointMarkers).forEach(m => clustered ? m.remove() : m.addTo(map));
+  Object.values(buildingMarkers).forEach(m => clustered ? m.remove() : m.addTo(map));
+  if (perimeterLayer)    clustered ? perimeterLayer.remove()    : perimeterLayer.addTo(map);
+  if (accessArrowMarker) clustered ? accessArrowMarker.remove() : accessArrowMarker.addTo(map);
 }
 
 // ===== MOVE POINT =====

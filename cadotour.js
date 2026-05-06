@@ -38,6 +38,9 @@ let viewerGalleryIdx = 0;
 // ===== PENDING LOAD =====
 let pendingLoadFile = null;
 
+// ===== CONSTANTS =====
+const CLUSTER_ZOOM_THRESHOLD = 16;
+
 // ===== UTILITIES =====
 function getActiveSite() { return state.sites.find(s => s.id === state.activeSiteId) || null; }
 function getActivePoint() {
@@ -89,6 +92,8 @@ function initMap() {
       if (def && !map.hasLayer(def)) def.addTo(map);
     }
   };
+
+  map.on('zoomend', updateMarkersVisibility);
 }
 
 // ===== SITE LOADING =====
@@ -210,6 +215,16 @@ function clearPointMarkers() {
   pointMarkers = {};
 }
 
+// ===== CLUSTER VISIBILITY =====
+function updateMarkersVisibility() {
+  if (!map || !state.activeSiteId) return;
+  const clustered = map.getZoom() < CLUSTER_ZOOM_THRESHOLD;
+  Object.values(pointMarkers).forEach(m => clustered ? m.remove() : m.addTo(map));
+  Object.values(buildingMarkers).forEach(m => clustered ? m.remove() : m.addTo(map));
+  if (perimeterLayer)    clustered ? perimeterLayer.remove()    : perimeterLayer.addTo(map);
+  if (accessArrowMarker) clustered ? accessArrowMarker.remove() : accessArrowMarker.addTo(map);
+}
+
 function refreshMarkerActive() {
   const site = getActiveSite();
   if (!site) return;
@@ -267,6 +282,8 @@ function selectSite(siteId) {
     if (site.accessArrow) renderAccessArrow(site);
     map.flyTo([site.lat, site.lon], Math.max(map.getZoom(), 17));
   }
+
+  updateMarkersVisibility();
 
   renderSidebar();
   switchViewMode('map');
