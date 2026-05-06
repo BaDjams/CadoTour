@@ -10,16 +10,13 @@ export function escapeAttr(s) {
   return String(s ?? '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
-// Regroupe les photos d'un même point (même position carte ou plan)
-export function findPhotoSiblings(photo, photos) {
-  if (photo.lat != null) {
-    return photos.filter(p => p.lat === photo.lat && p.lon === photo.lon).map(p => p.id);
+// Trouve le point qui contient la photo (id) dans un site
+export function findPointByPhotoId(site, photoId) {
+  if (!site || !photoId) return null;
+  for (const point of site.points || []) {
+    if ((point.photos || []).some(ph => ph.id === photoId)) return point;
   }
-  return photos.filter(p =>
-    p.planX      === photo.planX      && p.planY      === photo.planY &&
-    p.buildingId === photo.buildingId && p.floorId    === photo.floorId &&
-    p.sitePlanId === photo.sitePlanId
-  ).map(p => p.id);
+  return null;
 }
 
 export function makeSiteMarkerIcon(site, isActive) {

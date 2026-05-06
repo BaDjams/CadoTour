@@ -1,7 +1,6 @@
 'use strict';
 import {
-  escapeHtml, escapeAttr,
-  findPhotoSiblings as _findPhotoSiblings,
+  escapeHtml,
   makeSiteMarkerIcon,
   makeBuildingMarkerIcon as _makeBuildingMarkerIcon,
   drawPlanCanvas as _drawPlanCanvas,
@@ -16,6 +15,7 @@ const state = {
   activeBuildingId: null,
   activeFloorId: null,
   activeSitePlanId: null,
+  activePointId: null,
   activePhotoId: null,
   viewMode: 'map',
 };
@@ -26,14 +26,13 @@ let baseLayers       = {};
 let mbtilesLayer     = null;
 let siteMarkers      = {};
 let buildingMarkers  = {};
-let photoMarkers     = {};
+let pointMarkers     = {};
 let perimeterLayer   = null;
 let accessArrowMarker = null;
 let pannellumViewer  = null;
 const plan = { img: null, scale: 1, offsetX: 0, offsetY: 0, dragging: false };
 
 // ===== VIEWER GALLERY =====
-let viewerGallery    = [];
 let viewerGalleryIdx = 0;
 
 // ===== PENDING LOAD =====
@@ -41,7 +40,10 @@ let pendingLoadFile = null;
 
 // ===== UTILITIES =====
 function getActiveSite() { return state.sites.find(s => s.id === state.activeSiteId) || null; }
-function findPhotoSiblings(photo) { return _findPhotoSiblings(photo, getActiveSite()?.photos ?? []); }
+function getActivePoint() {
+  const site = getActiveSite();
+  return site?.points.find(p => p.id === state.activePointId) || null;
+}
 
 // ===== MAP INIT =====
 function initMap() {
@@ -95,28 +97,24 @@ function loadSiteFromFile(file) {
   reader.onload = e => {
     try {
       const data = JSON.parse(e.target.result);
-      // Ensure fields exist (compatibility with creator)
+      if (!Array.isArray(data.points)) {
+        alert('Fichier .cado au format obsolète. Recréez-le avec la nouvelle version de CadoCreator.');
+        return;
+      }
       data.address      = data.address      || '';
       data.contacts     = data.contacts     || [];
       data.icon         = data.icon         || '🏛';
       data.illustration = data.illustration || null;
       data.buildings    = data.buildings    || [];
       data.sitePlans    = data.sitePlans    || [];
-      data.photos       = data.photos       || [];
+      data.points       = data.points       || [];
       data.perimeter    = data.perimeter    || null;
       data.accessArrow  = data.accessArrow  || null;
-      // Migrate old format
-      if (data.floors?.length && !data.buildings.length) {
-        data.buildings.push({ id: 'b0', name: 'Bâtiment principal', lat: data.lat, lon: data.lon, icon: '🏢', floors: data.floors });
-      }
-      delete data.floors;
-      data.photos.forEach(p => {
-        if (p.type === 'classic') p.type = 'normal';
-        if (p.bearing == null) p.bearing = 0;
-        p.buildingId = p.buildingId ?? null;
-        p.sitePlanId = p.sitePlanId ?? null;
+      data.points.forEach(pt => {
+        if (pt.bearing == null) pt.bearing = 0;
+        pt.photos = pt.photos || [];
       });
-      // Replace if already loaded
+
       if (state.sites.find(s => s.id === data.id)) {
         if (siteMarkers[data.id]) { siteMarkers[data.id].remove(); delete siteMarkers[data.id]; }
         state.sites = state.sites.filter(s => s.id !== data.id);
@@ -167,8 +165,8 @@ function clearBuildingMarkers() {
   buildingMarkers = {};
 }
 
-// ===== PHOTO MARKERS =====
-function makePhotoIcon(type, bearing, isActive, count = 1) {
+// ===== POINT MARKERS =====
+function makePointIcon(type, bearing, isActive, count = 1) {
   const rot = ((bearing || 0) + 360) % 360;
   let svgInner, size, anchor;
   if (type === 'normal') {
@@ -196,28 +194,29 @@ function makePhotoIcon(type, bearing, isActive, count = 1) {
   });
 }
 
-function addPhotoMarker(photo) {
-  if (photo.lat == null) return;
-  const count = findPhotoSiblings(photo).length;
-  const m = L.marker([photo.lat, photo.lon], { icon: makePhotoIcon(photo.type, photo.bearing, false, count) })
+function addPointMarker(point) {
+  if (point.lat == null) return;
+  const isActive = point.id === state.activePointId;
+  const m = L.marker([point.lat, point.lon], {
+    icon: makePointIcon(point.type, point.bearing, isActive, point.photos.length),
+  })
     .addTo(map)
-    .on('click', e => { L.DomEvent.stopPropagation(e); openViewer(photo.id); });
-  photoMarkers[photo.id] = m;
+    .on('click', e => { L.DomEvent.stopPropagation(e); openViewer(point.id); });
+  pointMarkers[point.id] = m;
 }
 
-function clearPhotoMarkers() {
-  Object.values(photoMarkers).forEach(m => m.remove());
-  photoMarkers = {};
+function clearPointMarkers() {
+  Object.values(pointMarkers).forEach(m => m.remove());
+  pointMarkers = {};
 }
 
 function refreshMarkerActive() {
   const site = getActiveSite();
   if (!site) return;
-  Object.keys(photoMarkers).forEach(id => {
-    const p = site.photos.find(ph => ph.id === id);
-    if (!p) return;
-    const siblings = findPhotoSiblings(p);
-    photoMarkers[id].setIcon(makePhotoIcon(p.type, p.bearing, siblings.includes(state.activePhotoId), siblings.length));
+  Object.entries(pointMarkers).forEach(([id, m]) => {
+    const pt = site.points.find(p => p.id === id);
+    if (!pt) return;
+    m.setIcon(makePointIcon(pt.type, pt.bearing, id === state.activePointId, pt.photos.length));
   });
 }
 
@@ -249,24 +248,21 @@ function selectSite(siteId) {
   state.activeBuildingId = null;
   state.activeFloorId    = null;
   state.activeSitePlanId = null;
+  state.activePointId    = null;
   state.activePhotoId    = null;
 
   if (prev) updateSiteMarkerIcon(prev, false);
   updateSiteMarkerIcon(siteId, true);
 
   clearBuildingMarkers();
-  clearPhotoMarkers();
+  clearPointMarkers();
 
   const site = getActiveSite();
   if (site) {
     (site.buildings || []).forEach(b => addBuildingMarker(b));
-    // Un seul marker par position unique (point pouvant contenir plusieurs photos)
-    const mapPhotos = (site.photos || []).filter(p => !p.floorId && !p.sitePlanId && p.lat != null);
-    const seenPos = new Set();
-    mapPhotos.forEach(p => {
-      const key = `${p.lat},${p.lon}`;
-      if (!seenPos.has(key)) { seenPos.add(key); addPhotoMarker(p); }
-    });
+    (site.points || [])
+      .filter(pt => pt.lat != null && !pt.buildingId && !pt.sitePlanId)
+      .forEach(pt => addPointMarker(pt));
     if (site.perimeter)   renderSitePerimeter(site);
     if (site.accessArrow) renderAccessArrow(site);
     map.flyTo([site.lat, site.lon], Math.max(map.getZoom(), 17));
@@ -294,6 +290,7 @@ function selectFloor(buildingId, floorId) {
   state.activeBuildingId = buildingId;
   state.activeFloorId    = floorId;
   state.activeSitePlanId = null;
+  state.activePointId    = null;
   state.activePhotoId    = null;
   Object.entries(buildingMarkers).forEach(([id, m]) => {
     const bld = getActiveSite()?.buildings.find(b => b.id === id);
@@ -308,6 +305,7 @@ function selectSitePlan(spId) {
   state.activeBuildingId = null;
   state.activeFloorId    = null;
   state.activeSitePlanId = spId;
+  state.activePointId    = null;
   state.activePhotoId    = null;
   switchViewMode('plan');
   closeViewer();
@@ -334,7 +332,6 @@ function renderSidebar() {
     return;
   }
 
-  // Multi-site selector
   if (state.sites.length > 1) {
     const sel = document.createElement('select');
     sel.className = 'input-field';
@@ -428,37 +425,32 @@ function renderPlanMarkers() {
   const site = getActiveSite();
   if (!site) return;
 
-  let photos = [];
+  let points = [];
   if (state.activeSitePlanId) {
-    photos = site.photos.filter(p => p.sitePlanId === state.activeSitePlanId && p.planX != null);
+    points = site.points.filter(p => p.sitePlanId === state.activeSitePlanId && p.planX != null);
   } else if (state.activeBuildingId && state.activeFloorId) {
-    photos = site.photos.filter(p =>
+    points = site.points.filter(p =>
       p.buildingId === state.activeBuildingId && p.floorId === state.activeFloorId && p.planX != null
     );
   }
 
-  const seenPlanPos = new Set();
-  photos.forEach(photo => {
-    const posKey = `${photo.planX},${photo.planY}`;
-    if (seenPlanPos.has(posKey)) return;
-    seenPlanPos.add(posKey);
-
-    const sx = photo.planX * plan.scale + plan.offsetX;
-    const sy = photo.planY * plan.scale + plan.offsetY;
-    const isActive = findPhotoSiblings(photo).includes(state.activePhotoId);
-    const color = photo.type === '360' ? '#2980b9' : photo.type === 'panoramic' ? '#e07b20' : '#e94560';
+  points.forEach(point => {
+    const sx = point.planX * plan.scale + plan.offsetX;
+    const sy = point.planY * plan.scale + plan.offsetY;
+    const isActive = point.id === state.activePointId;
+    const color = point.type === '360' ? '#2980b9' : point.type === 'panoramic' ? '#e07b20' : '#e94560';
 
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('class', 'plan-pin');
     g.setAttribute('transform', `translate(${sx},${sy})`);
 
     const wedge = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    if (photo.type === 'normal')       wedge.setAttribute('d', 'M0,0 L-5,-12 A13,13,0,0,1,5,-12 Z');
-    else if (photo.type === 'panoramic') wedge.setAttribute('d', 'M0,0 L-11,-6.5 A13,13,0,0,1,11,-6.5 Z');
-    else                                wedge.setAttribute('d', 'M0,-11 A11,11,0,1,1,-0.01,-11 Z');
+    if (point.type === 'normal')        wedge.setAttribute('d', 'M0,0 L-5,-12 A13,13,0,0,1,5,-12 Z');
+    else if (point.type === 'panoramic') wedge.setAttribute('d', 'M0,0 L-11,-6.5 A13,13,0,0,1,11,-6.5 Z');
+    else                                 wedge.setAttribute('d', 'M0,-11 A11,11,0,1,1,-0.01,-11 Z');
     wedge.setAttribute('fill', color);
     wedge.setAttribute('opacity', '0.6');
-    wedge.setAttribute('transform', `rotate(${photo.bearing || 0})`);
+    wedge.setAttribute('transform', `rotate(${point.bearing || 0})`);
 
     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     circle.setAttribute('r', isActive ? 7 : 5.5);
@@ -470,8 +462,7 @@ function renderPlanMarkers() {
     g.appendChild(wedge);
     g.appendChild(circle);
 
-    const siblings = findPhotoSiblings(photo);
-    if (siblings.length > 1) {
+    if (point.photos.length > 1) {
       const br = 6;
       const r = isActive ? 7 : 5.5;
       const bx = r + br - 1, by = -(r + br - 1);
@@ -485,11 +476,11 @@ function renderPlanMarkers() {
       badgeTxt.setAttribute('text-anchor', 'middle'); badgeTxt.setAttribute('dominant-baseline', 'central');
       badgeTxt.setAttribute('font-size', '8'); badgeTxt.setAttribute('font-weight', 'bold');
       badgeTxt.setAttribute('fill', '#222');
-      badgeTxt.textContent = siblings.length;
+      badgeTxt.textContent = point.photos.length;
       g.appendChild(badgeBg); g.appendChild(badgeTxt);
     }
 
-    g.addEventListener('click', () => openViewer(photo.id));
+    g.addEventListener('click', () => openViewer(point.id));
     svg.appendChild(g);
   });
 }
@@ -526,21 +517,22 @@ function initPlanEvents() {
 }
 
 // ===== PHOTO VIEWER =====
-function openViewer(photoId) {
+function openViewer(pointId) {
   const site  = getActiveSite();
-  const photo = site?.photos.find(p => p.id === photoId);
-  if (!photo) return;
+  const point = site?.points.find(p => p.id === pointId);
+  if (!point || !point.photos.length) return;
 
-  viewerGallery    = findPhotoSiblings(photo);
-  viewerGalleryIdx = Math.max(0, viewerGallery.indexOf(photoId));
-  state.activePhotoId = photoId;
+  state.activePointId = point.id;
+  state.activePhotoId = point.photos[0].id;
+  viewerGalleryIdx    = 0;
+
   refreshMarkerActive();
   renderPlanMarkers();
-  _renderViewerPhoto(photo);
+  _renderViewerPhoto(point, point.photos[0]);
   updateGalleryNav();
 }
 
-function _renderViewerPhoto(photo) {
+function _renderViewerPhoto(point, photo) {
   document.getElementById('viewer-panel').classList.remove('hidden');
   document.getElementById('viewer-title').textContent = photo.title || 'Photo';
 
@@ -548,13 +540,13 @@ function _renderViewerPhoto(photo) {
   document.getElementById('panorama-viewer').classList.add('hidden');
   if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
 
-  if (photo.type === '360') {
+  if (point.type === '360') {
     document.getElementById('panorama-viewer').classList.remove('hidden');
     if (photo.dataURL) {
       pannellumViewer = pannellum.viewer('pannellum-container', {
         type: 'equirectangular', panorama: photo.dataURL,
         autoLoad: true, showControls: true,
-        northOffset: photo.bearing || 0,
+        northOffset: point.bearing || 0,
       });
     }
   } else {
@@ -565,32 +557,37 @@ function _renderViewerPhoto(photo) {
 
   const descRow  = document.getElementById('viewer-desc-row');
   const descText = document.getElementById('viewer-desc-text');
-  if (photo.description) {
-    descRow.style.display = '';
-    descText.textContent  = photo.description;
-  } else {
-    descRow.style.display = 'none';
+  if (descRow && descText) {
+    if (photo.description) {
+      descRow.style.display = '';
+      descText.textContent  = photo.description;
+    } else {
+      descRow.style.display = 'none';
+    }
   }
 }
 
-function updateGalleryNav() { _updateGalleryNav(viewerGallery, viewerGalleryIdx); }
+function updateGalleryNav() {
+  const point = getActivePoint();
+  const ids   = point ? point.photos.map(p => p.id) : [];
+  _updateGalleryNav(ids, viewerGalleryIdx);
+}
 
 function navigateGallery(delta) {
-  const site = getActiveSite();
-  if (!site || !viewerGallery.length) return;
-  viewerGalleryIdx = ((viewerGalleryIdx + delta) + viewerGallery.length) % viewerGallery.length;
-  const photo = site.photos.find(p => p.id === viewerGallery[viewerGalleryIdx]);
-  if (!photo) return;
+  const point = getActivePoint();
+  if (!point || !point.photos.length) return;
+  viewerGalleryIdx = ((viewerGalleryIdx + delta) + point.photos.length) % point.photos.length;
+  const photo = point.photos[viewerGalleryIdx];
   state.activePhotoId = photo.id;
   refreshMarkerActive();
   renderPlanMarkers();
-  _renderViewerPhoto(photo);
+  _renderViewerPhoto(point, photo);
   updateGalleryNav();
 }
 
 function closeViewer() {
+  state.activePointId = null;
   state.activePhotoId = null;
-  viewerGallery       = [];
   viewerGalleryIdx    = 0;
   document.getElementById('viewer-panel').classList.add('hidden');
   if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
@@ -629,10 +626,11 @@ function _doCloseSite() {
   state.activeBuildingId = null;
   state.activeFloorId    = null;
   state.activeSitePlanId = null;
+  state.activePointId    = null;
   state.activePhotoId    = null;
 
   clearBuildingMarkers();
-  clearPhotoMarkers();
+  clearPointMarkers();
   if (siteMarkers[siteId]) { siteMarkers[siteId].remove(); delete siteMarkers[siteId]; }
   if (perimeterLayer)    { perimeterLayer.remove();    perimeterLayer    = null; }
   if (accessArrowMarker) { accessArrowMarker.remove(); accessArrowMarker = null; }
