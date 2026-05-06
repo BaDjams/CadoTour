@@ -175,7 +175,7 @@ let searchTimer = null;
 let stepQueue = [];
 
 // ===== CONSTANTS =====
-const CLUSTER_ZOOM_THRESHOLD = 16;
+const CLUSTER_ZOOM_THRESHOLD = 17;
 
 const SITE_ICONS = [
   '🏘','🏙','🏭','🏬','🏥','🏫','🌾','🌲','🏛','🚂',
@@ -518,6 +518,7 @@ function confirmSiteForm() {
 
       removeSiteMarker(site.id);
       addSiteMarker(site);
+      updateMarkersVisibility();
       renderSidebar();
     }
     hideModal('modal-site-form');
@@ -1154,6 +1155,7 @@ function updateMarkersVisibility() {
   const clustered = map.getZoom() < CLUSTER_ZOOM_THRESHOLD;
   Object.values(pointMarkers).forEach(m => clustered ? m.remove() : m.addTo(map));
   Object.values(buildingMarkers).forEach(m => clustered ? m.remove() : m.addTo(map));
+  Object.values(siteMarkers).forEach(m => clustered ? m.addTo(map) : m.remove());
   if (perimeterLayer)    clustered ? perimeterLayer.remove()    : perimeterLayer.addTo(map);
   if (accessArrowMarker) clustered ? accessArrowMarker.remove() : accessArrowMarker.addTo(map);
 }

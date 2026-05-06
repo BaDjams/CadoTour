@@ -11,7 +11,12 @@
       "PowerShell(gh repo rename CadoTour --repo BaDjams/VirtualTour)",
       "PowerShell(git remote set-url origin https://github.com/BaDjams/CadoTour.git)",
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\CADO\\\\Documents\\\\GitHub\\\\VirtualTour\" -Recurse -Filter \"*.js\")",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(git remote *)",
+      "Bash(node --check shared.js)",
+      "Bash(node --check app.js)",
+      "Bash(node --check cadotour.js)",
+      "Bash(git reset *)"
     ]
   }
 }
