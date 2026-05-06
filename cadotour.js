@@ -714,6 +714,21 @@ function init() {
     if (e.key === 'ArrowLeft')  navigateGallery(-1);
     if (e.key === 'ArrowRight') navigateGallery(+1);
   });
+
+  // ---- Menu mobile ----
+  const btnMobileMenu = document.getElementById('btn-mobile-menu');
+  const topbarActions = document.getElementById('topbar-actions');
+  btnMobileMenu.addEventListener('click', () => {
+    topbarActions.classList.toggle('mobile-open');
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#topbar-actions') && !e.target.closest('#btn-mobile-menu')) {
+      topbarActions.classList.remove('mobile-open');
+    }
+  });
+  topbarActions.addEventListener('click', () => {
+    topbarActions.classList.remove('mobile-open');
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);

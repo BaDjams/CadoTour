@@ -1030,3 +1030,48 @@ textarea.input-field { resize: vertical; min-height: 60px; }
   #sidebar { display: none; }
   #viewer-panel { width: 100%; position: fixed; bottom: 0; left: 0; right: 0; height: 50vh; border-top: 1px solid var(--color-border); }
 }
+
+/* ===== HAMBURGER / MOBILE MENU ===== */
+#btn-mobile-menu {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--color-text);
+  font-size: 22px;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  line-height: 1;
+  flex-shrink: 0;
+}
+#btn-mobile-menu:hover { background: var(--color-surface2); }
+
+@media (max-width: 600px) {
+  #topbar { overflow: visible; }
+  #btn-mobile-menu { display: block; }
+  #topbar > #mbtiles-panel { display: none; }
+  #topbar > #topbar-actions {
+    display: none;
+    position: absolute;
+    top: var(--topbar-height);
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    background: var(--color-surface);
+    border-bottom: 2px solid var(--color-accent);
+    padding: 10px 12px;
+    gap: 8px;
+    z-index: 999;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  }
+  #topbar > #topbar-actions.mobile-open { display: flex; }
+  #topbar-actions .btn-secondary,
+  #topbar-actions a.btn-secondary {
+    width: 100%;
+    text-align: center;
+    padding: 12px 14px;
+    font-size: 15px;
+    display: block;
+    box-sizing: border-box;
+  }
+}
