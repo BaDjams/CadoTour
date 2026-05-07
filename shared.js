@@ -1,5 +1,7 @@
 // shared.js — fonctions communes à CadoCreator (app.js) et CadoTour (cadotour.js)
 
+import { renderIcon } from './icons.js';
+
 export function escapeHtml(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -23,7 +25,7 @@ export function makeSiteMarkerIcon(site, isActive) {
   return L.divIcon({
     className: '',
     html: `<div class="site-marker ${isActive ? 'active' : ''}">
-             <div class="site-marker-bubble" title="${escapeAttr(site.name)}">${site.icon || '🏛'}</div>
+             <div class="site-marker-bubble" title="${escapeAttr(site.name)}">${renderIcon(site.icon) || renderIcon('landmark')}</div>
              <div class="site-marker-name">${escapeHtml(site.name)}</div>
            </div>`,
     iconSize: [140, 66],
@@ -35,7 +37,7 @@ export function makeBuildingMarkerIcon(building, isActive) {
   return L.divIcon({
     className: '',
     html: `<div class="building-marker ${isActive ? 'active' : ''}">
-             <div class="building-marker-bubble" title="${escapeAttr(building.name)}">${building.icon || '🏢'}</div>
+             <div class="building-marker-bubble" title="${escapeAttr(building.name)}">${renderIcon(building.icon) || renderIcon('building')}</div>
              <div class="building-marker-name">${escapeHtml(building.name)}</div>
            </div>`,
     iconSize: [120, 58],

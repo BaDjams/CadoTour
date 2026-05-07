@@ -544,7 +544,9 @@ html, body {
   width: 52px; height: 52px;
   display: flex; align-items: center; justify-content: center;
   transition: all var(--transition);
+  color: #fff;
 }
+.site-marker-bubble svg { width: 32px; height: 32px; }
 .site-marker.active .site-marker-bubble {
   background: rgba(233,69,96,0.2);
   box-shadow: 0 0 0 3px rgba(233,69,96,0.4);
@@ -579,7 +581,9 @@ html, body {
   width: 44px; height: 44px;
   display: flex; align-items: center; justify-content: center;
   transition: all var(--transition);
+  color: #fff;
 }
+.building-marker-bubble svg { width: 26px; height: 26px; }
 .building-marker.active .building-marker-bubble {
   background: rgba(142,68,173,0.4);
   box-shadow: 0 0 0 3px rgba(142,68,173,0.4);
@@ -737,8 +741,10 @@ html, body {
   font-size: 26px;
   display: flex; align-items: center; justify-content: center;
   transition: all var(--transition);
+  color: var(--color-text);
   flex-shrink: 0;
 }
+.icon-bank-btn svg { width: 26px; height: 26px; }
 .icon-bank-btn:hover { background: var(--color-surface2); }
 .icon-bank-btn.selected { border-color: var(--color-accent); background: rgba(233,69,96,0.15); }
 

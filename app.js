@@ -8,6 +8,7 @@ import {
   getActivePlan as _getActivePlan,
   updateGalleryNav as _updateGalleryNav,
 } from './shared.js';
+import { SITE_ICONS, BUILDING_ICONS, renderIcon } from './icons.js';
 
 // ===== CACHE (IndexedDB — pas de limite de taille) =====
 const DB_NAME  = 'cadocreator';
@@ -159,13 +160,13 @@ let planMoveCleanup   = null;
 // ===== SITE FORM TEMP =====
 let sfEditingId = null;
 let sfTempContacts = [];
-let sfTempIcon = '🏛';
+let sfTempIcon = 'landmark';
 let sfTempIllustration = undefined;
 
 // ===== BUILDING FORM TEMP =====
 let bfTempLat = null;
 let bfTempLon = null;
-let bfTempIcon = '🏢';
+let bfTempIcon = 'building';
 
 // ===== FLOOR FORM TEMP =====
 let addFloorBuildingId = null;
@@ -182,16 +183,19 @@ let stepQueue = [];
 // ===== CONSTANTS =====
 const CLUSTER_ZOOM_THRESHOLD = 17;
 
-const SITE_ICONS = [
-  '🏘','🏙','🏭','🏬','🏥','🏫','🌾','🌲','🏛','🚂',
-  '✈','⚓','🏖','🏔','🌊','⚡','🎡','🏟','🏕','🔥',
-];
-
-const BUILDING_ICONS = [
-  '🏠','🏡','🏘','🏢','🏗','🏫','🏥','🏨','🏪','🏬',
-  '🏦','🏤','🏭','📦','🌾','🏟','🎭','🎪','⛪','🕌',
-  '🛕','🕍','🏛','🏰','🚒','⛽','🅿',
-];
+// SITE_ICONS / BUILDING_ICONS sont désormais importés depuis ./icons.js (SVG Lucide-like).
+// Ancienne version emoji conservée ci-dessous pour pouvoir re-basculer rapidement.
+//
+// const SITE_ICONS = [
+//   '🏘','🏙','🏭','🏬','🏥','🏫','🌾','🌲','🏛','🚂',
+//   '✈','⚓','🏖','🏔','🌊','⚡','🎡','🏟','🏕','🔥',
+// ];
+//
+// const BUILDING_ICONS = [
+//   '🏠','🏡','🏘','🏢','🏗','🏫','🏥','🏨','🏪','🏬',
+//   '🏦','🏤','🏭','📦','🌾','🏟','🎭','🎪','⛪','🕌',
+//   '🛕','🕍','🏛','🏰','🚒','⛽','🅿',
+// ];
 
 // ===== HELPERS =====
 function uid() {
@@ -345,7 +349,7 @@ function onMapRightClick(e) {
       { label: '📷 Photo normale (45°)',      action: () => startAddPhotoAt(latlng.lat, latlng.lng, 'normal') },
       { label: '🌅 Photo panoramique (120°)', action: () => startAddPhotoAt(latlng.lat, latlng.lng, 'panoramic') },
       { label: '🔵 Photo 360°',               action: () => startAddPhotoAt(latlng.lat, latlng.lng, '360') },
-      { label: '🚁 Vue drone',                action: () => startAddPhotoAt(latlng.lat, latlng.lng, 'drone') },
+      { label: '🚁 Vue aérienne/drône',       action: () => startAddPhotoAt(latlng.lat, latlng.lng, 'drone') },
       { label: null },
       { label: '🏢 Ajouter un bâtiment ici', action: () => openBuildingForm(latlng.lat, latlng.lng) },
     ]);
@@ -575,7 +579,7 @@ function openSiteForm(siteId, lat, lon, address) {
   document.getElementById('sf-lon').value     = site?.lon ?? lon ?? '';
 
   sfTempContacts     = JSON.parse(JSON.stringify(site?.contacts || []));
-  sfTempIcon         = site?.icon || '🏛';
+  sfTempIcon         = site?.icon || 'landmark';
   sfTempIllustration = undefined;
 
   renderSfIconBank();
@@ -1147,7 +1151,7 @@ function updateSiteMarkerIcon(siteId, isActive) {
 function openBuildingForm(lat, lon) {
   bfTempLat  = lat;
   bfTempLon  = lon;
-  bfTempIcon = '🏢';
+  bfTempIcon = 'building';
 
   document.getElementById('bf-name').value = '';
   renderBfIconBank();
@@ -2006,7 +2010,7 @@ function startMovePlanPoint(point) {
 function photoAddLabel(type) {
   if (type === 'panoramic') return '🌅 Ajouter une photo panoramique';
   if (type === '360')       return '🔵 Ajouter une photo 360°';
-  if (type === 'drone')     return '🚁 Ajouter une vue drone';
+  if (type === 'drone')     return '🚁 Ajouter une vue aérienne/drône';
   return '📷 Ajouter une photo normale';
 }
 
@@ -2134,7 +2138,7 @@ function updatePhotoFileList() {
 }
 
 function openAddPhotoModal(type) {
-  const titles = { normal: 'Photo normale', panoramic: 'Photo panoramique (120°)', '360': 'Photo 360°', drone: 'Vue drone' };
+  const titles = { normal: 'Photo normale', panoramic: 'Photo panoramique (120°)', '360': 'Photo 360°', drone: 'Vue aérienne/drône' };
   document.getElementById('modal-add-photo-title').textContent = 'Ajouter : ' + (titles[type] || type);
   document.getElementById('input-new-photo-file').value = '';
   document.getElementById('new-photo-title').value = '';
@@ -2367,7 +2371,7 @@ function renderIconBank(containerId, icons, selected, onSelect) {
   icons.forEach(icon => {
     const btn = document.createElement('button');
     btn.className = 'icon-bank-btn' + (icon === selected ? ' selected' : '');
-    btn.textContent = icon;
+    btn.innerHTML = renderIcon(icon);
     btn.type = 'button';
     btn.addEventListener('click', () => {
       onSelect(icon);

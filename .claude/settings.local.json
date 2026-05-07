@@ -16,7 +16,14 @@
       "Bash(node --check shared.js)",
       "Bash(node --check app.js)",
       "Bash(node --check cadotour.js)",
-      "Bash(git reset *)"
+      "Bash(git reset *)",
+      "WebSearch",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:gtamods.com)",
+      "Bash(node --check icons.js)",
+      "Bash(git fetch *)",
+      "Bash(git stash *)",
+      "Bash(git pull *)"
     ]
   }
 }
