@@ -1288,22 +1288,23 @@ function clearBuildingMarkers() {
 // ===== POINT MARKERS =====
 function makePointIcon(type, bearing, isActive, count = 1) {
   const rot = ((bearing || 0) + 360) % 360;
-  let svgInner, size, anchor;
+  const sw  = isActive ? 3 : 1.5;
+  let svgInner, size, anchor, color;
 
   if (type === 'normal') {
-    size = 44; anchor = 22;
+    size = 52; anchor = 26; color = '#e94560';
     svgInner = `
-      <path d="M0,0 L-6.9,-16.6 A18,18,0,0,1,6.9,-16.6 Z" fill="#e94560" opacity="0.8"/>
-      <circle r="6" fill="#e94560" stroke="white" stroke-width="${isActive ? 2.5 : 1.5}"/>`;
+      <path d="M0,0 L-8.28,-19.92 A21.6,21.6,0,0,1,8.28,-19.92 Z" fill="${color}" opacity="0.8"/>
+      <circle r="6" fill="${color}" stroke="white" stroke-width="${sw}"/>`;
   } else if (type === 'panoramic') {
-    size = 48; anchor = 24;
+    size = 56; anchor = 28; color = '#e07b20';
     svgInner = `
-      <path d="M0,0 L-15.6,-9 A18,18,0,0,1,15.6,-9 Z" fill="#e07b20" opacity="0.75"/>
-      <circle r="6" fill="#e07b20" stroke="white" stroke-width="${isActive ? 2.5 : 1.5}"/>`;
+      <path d="M0,0 L-18.72,-10.8 A21.6,21.6,0,0,1,18.72,-10.8 Z" fill="${color}" opacity="0.75"/>
+      <circle r="6" fill="${color}" stroke="white" stroke-width="${sw}"/>`;
   } else if (type === 'drone') {
-    size = 52; anchor = 26;
+    size = 60; anchor = 30; color = '#8e44ad';
     svgInner = `
-      <path d="M0,0 L-15.6,-9 A18,18,0,0,1,15.6,-9 Z" fill="#8e44ad" opacity="0.75"/>
+      <path d="M0,0 L-18.72,-10.8 A21.6,21.6,0,0,1,18.72,-10.8 Z" fill="${color}" opacity="0.75"/>
       <line x1="0" y1="0" x2="-7" y2="-7" stroke="white" stroke-width="1.5"/>
       <line x1="0" y1="0" x2="7" y2="-7" stroke="white" stroke-width="1.5"/>
       <line x1="0" y1="0" x2="-7" y2="7" stroke="white" stroke-width="1.5"/>
@@ -1312,19 +1313,22 @@ function makePointIcon(type, bearing, isActive, count = 1) {
       <circle cx="7" cy="-7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/>
       <circle cx="-7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/>
       <circle cx="7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/>
-      <rect x="-3" y="-3" width="6" height="6" rx="1" fill="#8e44ad" stroke="white" stroke-width="${isActive ? 2 : 1.3}"/>`;
+      <rect x="-3" y="-3" width="6" height="6" rx="1" fill="${color}" stroke="white" stroke-width="${sw}"/>`;
   } else {
-    size = 40; anchor = 20;
+    size = 52; anchor = 26; color = '#2980b9';
     svgInner = `
-      <circle r="15" fill="none" stroke="#2980b9" stroke-width="2.5" opacity="0.85"/>
-      <polygon points="0,-15 -4,-9 4,-9" fill="#2980b9"/>
-      <circle r="5" fill="#2980b9" stroke="white" stroke-width="${isActive ? 2.5 : 1.5}"/>`;
+      <path d="M 0,-18 A 18,18 0 1 1 -3.13,-17.73" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round"/>
+      <polygon points="1.80,-18.60 -2.61,-14.78 -3.65,-20.69" fill="${color}"/>
+      <circle r="6" fill="${color}" stroke="white" stroke-width="${sw}"/>`;
   }
 
-  const glow = isActive ? 'drop-shadow(0 0 6px rgba(255,255,255,0.8))' : '';
+  const glow  = isActive
+    ? `drop-shadow(0 0 8px ${color}) drop-shadow(0 0 14px rgba(255,255,255,0.95))`
+    : 'drop-shadow(0 1px 4px rgba(0,0,0,0.6))';
+  const scale = isActive ? 'scale(1.12)' : '';
   const badge = count > 1 ? `<span class="photo-count-badge">${count}</span>` : '';
-  const html = `<div style="position:relative;width:${size}px;height:${size}px">
-    <div style="width:${size}px;height:${size}px;transform:rotate(${rot}deg);transform-origin:${anchor}px ${anchor}px;filter:drop-shadow(0 1px 4px rgba(0,0,0,0.6)) ${glow}">
+  const html = `<div style="position:relative;width:${size}px;height:${size}px;filter:${glow};transform:${scale};transform-origin:${anchor}px ${anchor}px">
+    <div style="width:${size}px;height:${size}px;transform:rotate(${rot}deg);transform-origin:${anchor}px ${anchor}px">
       <svg width="${size}" height="${size}" viewBox="-${anchor} -${anchor} ${size} ${size}" style="overflow:visible">${svgInner}</svg>
     </div>
     ${badge}
@@ -1882,31 +1886,48 @@ function renderPlanMarkers() {
     const isGhost = planMovePointId === point.id;
 
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    g.setAttribute('class', 'plan-pin');
-    g.setAttribute('transform', `translate(${sx},${sy})`);
+    g.setAttribute('class', 'plan-pin' + (isActive ? ' plan-pin-active' : ''));
+    g.setAttribute('transform', `translate(${sx},${sy})${isActive ? ' scale(1.15)' : ''}`);
+    if (isActive) g.setAttribute('style', `filter: drop-shadow(0 0 6px ${color}) drop-shadow(0 0 10px rgba(255,255,255,0.9))`);
     if (isGhost) { g.setAttribute('opacity', '0.3'); g.setAttribute('pointer-events', 'none'); }
 
-    const wedge = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     const rot = point.bearing || 0;
-    if (point.type === 'normal') {
-      wedge.setAttribute('d', 'M0,0 L-5,-12 A13,13,0,0,1,5,-12 Z');
-    } else if (point.type === 'panoramic' || point.type === 'drone') {
-      wedge.setAttribute('d', 'M0,0 L-11,-6.5 A13,13,0,0,1,11,-6.5 Z');
+    if (point.type === '360') {
+      const arc = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      arc.setAttribute('d', 'M 0,-11 A 11,11 0 1 1 -1.91,-10.83');
+      arc.setAttribute('fill', 'none');
+      arc.setAttribute('stroke', color);
+      arc.setAttribute('stroke-width', '2.2');
+      arc.setAttribute('stroke-linecap', 'round');
+      arc.setAttribute('opacity', '0.85');
+      arc.setAttribute('transform', `rotate(${rot})`);
+      g.appendChild(arc);
+      const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      arrow.setAttribute('points', '1.04,-11.36 -1.56,-8.86 -2.26,-12.80');
+      arrow.setAttribute('fill', color);
+      arrow.setAttribute('opacity', '0.85');
+      arrow.setAttribute('transform', `rotate(${rot})`);
+      g.appendChild(arrow);
     } else {
-      wedge.setAttribute('d', `M0,-11 A11,11,0,1,1,-0.01,-11 Z`);
+      const wedge = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      if (point.type === 'normal') {
+        wedge.setAttribute('d', 'M0,0 L-6,-14.4 A15.6,15.6,0,0,1,6,-14.4 Z');
+      } else { // panoramic | drone
+        wedge.setAttribute('d', 'M0,0 L-13.2,-7.8 A15.6,15.6,0,0,1,13.2,-7.8 Z');
+      }
+      wedge.setAttribute('fill', color);
+      wedge.setAttribute('opacity', '0.6');
+      wedge.setAttribute('transform', `rotate(${rot})`);
+      g.appendChild(wedge);
     }
-    wedge.setAttribute('fill', color);
-    wedge.setAttribute('opacity', '0.6');
-    wedge.setAttribute('transform', `rotate(${rot})`);
 
     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     circle.setAttribute('r', isActive ? 7 : 5.5);
     circle.setAttribute('fill', color);
     circle.setAttribute('stroke', 'white');
-    circle.setAttribute('stroke-width', isActive ? 2 : 1.5);
+    circle.setAttribute('stroke-width', isActive ? 3 : 1.5);
     circle.setAttribute('class', 'plan-pin-circle');
 
-    g.appendChild(wedge);
     g.appendChild(circle);
 
     if (point.photos.length > 1) {
