@@ -59,12 +59,12 @@ export function getActivePlan(state, site) {
   if (!site) return null;
   if (state.activeSitePlanId) {
     const sp = site.sitePlans?.find(s => s.id === state.activeSitePlanId);
-    return sp ? { label: sp.name, imageDataURL: sp.imageDataURL } : null;
+    return sp ? { label: sp.name, imageId: sp.imageId } : null;
   }
   if (state.activeBuildingId && state.activeFloorId) {
     const bld   = site.buildings?.find(b => b.id === state.activeBuildingId);
     const floor = bld?.floors?.find(f => f.id === state.activeFloorId);
-    return floor ? { label: `${bld.name} — ${floor.name}`, imageDataURL: floor.imageDataURL } : null;
+    return floor ? { label: `${bld.name} — ${floor.name}`, imageId: floor.imageId } : null;
   }
   return null;
 }

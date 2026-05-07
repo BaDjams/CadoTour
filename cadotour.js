@@ -7,6 +7,8 @@ import {
   getActivePlan as _getActivePlan,
   updateGalleryNav as _updateGalleryNav,
 } from './shared.js';
+import * as imageStore from './imageStore.js';
+import { renderIcon } from './icons.js';
 
 // ===== STATE =====
 const state = {
@@ -97,28 +99,61 @@ function initMap() {
 }
 
 // ===== SITE LOADING =====
+async function _migrateLoadedSite(data) {
+  data.address      = data.address      || '';
+  data.contacts     = data.contacts     || [];
+  data.icon         = data.icon         || 'landmark';
+  data.buildings    = data.buildings    || [];
+  data.sitePlans    = data.sitePlans    || [];
+  data.points       = data.points       || [];
+  data.perimeter    = data.perimeter    || null;
+  data.accessArrow  = data.accessArrow  || null;
+
+  if (typeof data.illustration === 'string' && data.illustration.startsWith('data:')) {
+    data.illustrationId = await imageStore.migrateDataURL(data.illustration);
+    delete data.illustration;
+  }
+
+  for (const sp of data.sitePlans) {
+    if (sp.imageDataURL) {
+      sp.imageId = await imageStore.migrateDataURL(sp.imageDataURL);
+      delete sp.imageDataURL;
+    }
+  }
+
+  for (const bld of data.buildings) {
+    bld.floors = bld.floors || [];
+    for (const fl of bld.floors) {
+      if (fl.imageDataURL) {
+        fl.imageId = await imageStore.migrateDataURL(fl.imageDataURL);
+        delete fl.imageDataURL;
+      }
+    }
+  }
+
+  for (const pt of data.points) {
+    if (pt.bearing == null) pt.bearing = 0;
+    pt.photos = pt.photos || [];
+    for (const ph of pt.photos) {
+      if (ph.dataURL) {
+        ph.imageId = await imageStore.migrateDataURL(ph.dataURL);
+        delete ph.dataURL;
+      }
+      delete ph.thumbnail;
+    }
+  }
+}
+
 function loadSiteFromFile(file) {
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = async e => {
     try {
       const data = JSON.parse(e.target.result);
       if (!Array.isArray(data.points)) {
         alert('Fichier .cado au format obsolète. Recréez-le avec la nouvelle version de CadoCreator.');
         return;
       }
-      data.address      = data.address      || '';
-      data.contacts     = data.contacts     || [];
-      data.icon         = data.icon         || '🏛';
-      data.illustration = data.illustration || null;
-      data.buildings    = data.buildings    || [];
-      data.sitePlans    = data.sitePlans    || [];
-      data.points       = data.points       || [];
-      data.perimeter    = data.perimeter    || null;
-      data.accessArrow  = data.accessArrow  || null;
-      data.points.forEach(pt => {
-        if (pt.bearing == null) pt.bearing = 0;
-        pt.photos = pt.photos || [];
-      });
+      await _migrateLoadedSite(data);
 
       if (state.sites.find(s => s.id === data.id)) {
         if (siteMarkers[data.id]) { siteMarkers[data.id].remove(); delete siteMarkers[data.id]; }
@@ -332,7 +367,7 @@ function selectSitePlan(spId) {
 // ===== SIDEBAR =====
 function renderSiteHeader() {
   const site = getActiveSite();
-  document.getElementById('site-header-icon').textContent = site ? (site.icon || '🏛') : '';
+  document.getElementById('site-header-icon').innerHTML = site ? renderIcon(site.icon || 'landmark') : '';
   document.getElementById('site-header-name').textContent = site ? site.name : 'Aucun site chargé';
 }
 
@@ -384,7 +419,7 @@ function renderSidebar() {
     site.buildings.forEach(building => {
       const bh = document.createElement('div');
       bh.className = 'nav-building-header';
-      bh.innerHTML = `<span>${escapeHtml(building.icon || '🏢')}</span>
+      bh.innerHTML = `<span class="nav-bld-icon">${renderIcon(building.icon || 'building')}</span>
                       <span style="flex:1">${escapeHtml(building.name)}</span>`;
       nav.appendChild(bh);
       (building.floors || []).forEach(floor => appendNavItem(nav, {
@@ -415,12 +450,13 @@ function appendNavItem(nav, { icon, label, active, sub, onClick }) {
 // ===== PLAN RENDERING =====
 function getActivePlan() { return _getActivePlan(state, getActiveSite()); }
 
-function renderPlan() {
+async function renderPlan() {
   const active = getActivePlan();
   document.getElementById('plan-floor-name').textContent = active?.label || 'Plan';
   const canvas   = document.getElementById('plan-canvas');
   const viewport = document.getElementById('plan-viewport');
-  if (!active?.imageDataURL) { canvas.width = 0; canvas.height = 0; renderPlanMarkers(); return; }
+  const url = active?.imageId ? await imageStore.getURL(active.imageId) : null;
+  if (!url) { canvas.width = 0; canvas.height = 0; renderPlanMarkers(); return; }
   const img = new Image();
   img.onload = () => {
     plan.img = img;
@@ -431,7 +467,7 @@ function renderPlan() {
     drawPlanCanvas();
     renderPlanMarkers();
   };
-  img.src = active.imageDataURL;
+  img.src = url;
 }
 
 function drawPlanCanvas() { _drawPlanCanvas(plan); }
@@ -549,7 +585,7 @@ function openViewer(pointId) {
   updateGalleryNav();
 }
 
-function _renderViewerPhoto(point, photo) {
+async function _renderViewerPhoto(point, photo) {
   document.getElementById('viewer-panel').classList.remove('hidden');
   document.getElementById('viewer-title').textContent = photo.title || 'Photo';
 
@@ -557,18 +593,20 @@ function _renderViewerPhoto(point, photo) {
   document.getElementById('panorama-viewer').classList.add('hidden');
   if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
 
+  const url = photo.imageId ? await imageStore.getURL(photo.imageId) : '';
+
   if (point.type === '360') {
     document.getElementById('panorama-viewer').classList.remove('hidden');
-    if (photo.dataURL) {
+    if (url) {
       pannellumViewer = pannellum.viewer('pannellum-container', {
-        type: 'equirectangular', panorama: photo.dataURL,
+        type: 'equirectangular', panorama: url,
         autoLoad: true, showControls: true,
         northOffset: point.bearing || 0,
       });
     }
   } else {
     document.getElementById('classic-viewer').classList.remove('hidden');
-    document.getElementById('classic-photo-img').src = photo.dataURL || '';
+    document.getElementById('classic-photo-img').src = url;
     document.getElementById('classic-photo-caption').textContent = photo.description || '';
   }
 

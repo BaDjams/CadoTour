@@ -9,22 +9,13 @@ import {
   updateGalleryNav as _updateGalleryNav,
 } from './shared.js';
 import { SITE_ICONS, BUILDING_ICONS, renderIcon } from './icons.js';
+import * as imageStore from './imageStore.js';
 
 // ===== CACHE (IndexedDB — pas de limite de taille) =====
-const DB_NAME  = 'cadocreator';
-const DB_STORE = 'state';
-let _db        = null;
+const DB_STORE = imageStore.STORE_STATE_NAME;
 let _saveTimer = null;
 
-async function _openDB() {
-  if (_db) return _db;
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = e => e.target.result.createObjectStore(DB_STORE);
-    req.onsuccess = e => { _db = e.target.result; resolve(_db); };
-    req.onerror   = () => reject(req.error);
-  });
-}
+async function _openDB() { return imageStore.openDB(); }
 
 function scheduleCacheSave() {
   clearTimeout(_saveTimer);
@@ -66,24 +57,23 @@ async function checkCacheRestore() {
     if (!confirm(`Session non sauvegardée (${validSites.length} site(s) : ${names}).\nRestaurer ?`)) {
       clearCacheState(); return;
     }
-    validSites.forEach(data => {
-      normalizeSite(data);
-      if (state.sites.find(s => s.id === data.id)) return;
+    for (const data of validSites) {
+      await normalizeSite(data);
+      if (state.sites.find(s => s.id === data.id)) continue;
       state.sites.push(data);
       addSiteMarker(data);
       if (data.perimeter)   renderSitePerimeter(data);
       if (data.accessArrow) renderAccessArrow(data);
-    });
+    }
     if (validSites.length) selectSite(validSites[0].id);
     updateTopBarButtons();
   } catch (e) { console.warn('Cache restore failed:', e); }
 }
 
-function normalizeSite(data) {
+async function normalizeSite(data) {
   data.address      = data.address      || '';
   data.contacts     = data.contacts     || [];
-  data.icon         = data.icon         || '🏛';
-  data.illustration = data.illustration || null;
+  data.icon         = data.icon         || 'landmark';
   data.buildings    = data.buildings    || [];
   data.sitePlans    = data.sitePlans    || [];
   data.points       = data.points       || [];
@@ -91,10 +81,47 @@ function normalizeSite(data) {
   data.accessArrow  = data.accessArrow  || null;
   delete data.photos; // ancien champ — modèle obsolète
   delete data.floors; // ancien champ — modèle obsolète
-  data.points.forEach(pt => {
+
+  // Migration : illustration en dataURL → Blob + illustrationId
+  if (typeof data.illustration === 'string' && data.illustration.startsWith('data:')) {
+    data.illustrationId = await imageStore.migrateDataURL(data.illustration);
+    delete data.illustration;
+  } else if (data.illustration && typeof data.illustration === 'object') {
+    // garde-fou : ancien format objet → drop
+    delete data.illustration;
+  }
+
+  // Migration : floor.imageDataURL → floor.imageId
+  for (const bld of data.buildings) {
+    bld.floors = bld.floors || [];
+    for (const floor of bld.floors) {
+      if (floor.imageDataURL) {
+        floor.imageId = await imageStore.migrateDataURL(floor.imageDataURL);
+        delete floor.imageDataURL;
+      }
+    }
+  }
+
+  // Migration : sitePlan.imageDataURL → sitePlan.imageId
+  for (const sp of data.sitePlans) {
+    if (sp.imageDataURL) {
+      sp.imageId = await imageStore.migrateDataURL(sp.imageDataURL);
+      delete sp.imageDataURL;
+    }
+  }
+
+  // Migration : photos[].dataURL → photos[].imageId (et drop des thumbnails inutilisés)
+  for (const pt of data.points) {
     if (pt.bearing == null) pt.bearing = 0;
     pt.photos = pt.photos || [];
-  });
+    for (const ph of pt.photos) {
+      if (ph.dataURL) {
+        ph.imageId = await imageStore.migrateDataURL(ph.dataURL);
+        delete ph.dataURL;
+      }
+      delete ph.thumbnail;
+    }
+  }
 }
 
 // ===== STATE =====
@@ -202,15 +229,6 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-function fileToDataURL(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload  = e => resolve(e.target.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
 function getActiveSite() {
   return state.sites.find(s => s.id === state.activeSiteId) || null;
 }
@@ -240,23 +258,6 @@ function hideModal(id) {
     mid => mid !== id && !document.getElementById(mid).classList.contains('hidden')
   );
   if (!anyOpen) document.getElementById('modal-backdrop').classList.add('hidden');
-}
-
-async function makeThumbnail(dataURL, size = 64) {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = size; c.height = size;
-      const ctx = c.getContext('2d');
-      const sc = size / Math.min(img.width, img.height);
-      const sw = img.width * sc, sh = img.height * sc;
-      ctx.drawImage(img, (size - sw) / 2, (size - sh) / 2, sw, sh);
-      resolve(c.toDataURL('image/jpeg', 0.7));
-    };
-    img.onerror = () => resolve(null);
-    img.src = dataURL;
-  });
 }
 
 // ===== MAP INITIALISATION =====
@@ -584,7 +585,7 @@ function openSiteForm(siteId, lat, lon, address) {
 
   renderSfIconBank();
   renderSfContacts();
-  updateSfIllustrationPreview(site?.illustration || null);
+  updateSfIllustrationPreview(site?.illustrationId || null);
 
   showModal('modal-site-form');
 }
@@ -604,7 +605,12 @@ function confirmSiteForm() {
       if (!isNaN(lon)) site.lon = lon;
       site.icon     = sfTempIcon;
       site.contacts = JSON.parse(JSON.stringify(sfTempContacts));
-      if (sfTempIllustration !== undefined) site.illustration = sfTempIllustration;
+      if (sfTempIllustration !== undefined) {
+        if (site.illustrationId && site.illustrationId !== sfTempIllustration) {
+          imageStore.deleteImage(site.illustrationId);
+        }
+        site.illustrationId = sfTempIllustration;
+      }
 
       removeSiteMarker(site.id);
       addSiteMarker(site);
@@ -624,7 +630,7 @@ function confirmSiteForm() {
     lat,
     lon,
     icon: sfTempIcon,
-    illustration: sfTempIllustration !== undefined ? sfTempIllustration : null,
+    illustrationId: sfTempIllustration !== undefined ? sfTempIllustration : null,
     contacts: JSON.parse(JSON.stringify(sfTempContacts)),
     buildings: [],
     sitePlans: [],
@@ -885,14 +891,14 @@ function clearStepBanner() {
 // ===== LOAD / SAVE =====
 function loadSiteFromFile(file) {
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = async e => {
     try {
       const data = JSON.parse(e.target.result);
       if (!Array.isArray(data.points)) {
         alert('Fichier .cado au format obsolète (avant le passage au modèle "points").\nCe fichier ne peut pas être ouvert avec cette version.');
         return;
       }
-      normalizeSite(data);
+      await normalizeSite(data);
 
       if (state.sites.find(s => s.id === data.id)) {
         if (!confirm(`Un site "${data.name}" est déjà chargé. Remplacer ?`)) return;
@@ -914,8 +920,51 @@ function loadSiteFromFile(file) {
   reader.readAsText(file);
 }
 
-function downloadSite(site) {
-  const json = JSON.stringify(site, null, 2);
+// Construit une copie sérialisable du site avec les images réinjectées en dataURL.
+// Format .cado rétro-compatible avec les versions antérieures (avant le passage aux Blobs).
+async function buildExportableSite(site) {
+  const out = JSON.parse(JSON.stringify(site));
+
+  if (out.illustrationId) {
+    const blob = await imageStore.getBlob(out.illustrationId);
+    if (blob) out.illustration = await imageStore.blobToDataURL(blob);
+    delete out.illustrationId;
+  }
+
+  for (const sp of out.sitePlans || []) {
+    if (sp.imageId) {
+      const blob = await imageStore.getBlob(sp.imageId);
+      if (blob) sp.imageDataURL = await imageStore.blobToDataURL(blob);
+      delete sp.imageId;
+    }
+  }
+
+  for (const bld of out.buildings || []) {
+    for (const fl of bld.floors || []) {
+      if (fl.imageId) {
+        const blob = await imageStore.getBlob(fl.imageId);
+        if (blob) fl.imageDataURL = await imageStore.blobToDataURL(blob);
+        delete fl.imageId;
+      }
+    }
+  }
+
+  for (const pt of out.points || []) {
+    for (const ph of pt.photos || []) {
+      if (ph.imageId) {
+        const blob = await imageStore.getBlob(ph.imageId);
+        if (blob) ph.dataURL = await imageStore.blobToDataURL(blob);
+        delete ph.imageId;
+      }
+    }
+  }
+
+  return out;
+}
+
+async function downloadSite(site) {
+  const exportable = await buildExportableSite(site);
+  const json = JSON.stringify(exportable, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
@@ -925,10 +974,10 @@ function downloadSite(site) {
   URL.revokeObjectURL(url);
 }
 
-function saveSite() {
+async function saveSite() {
   const site = getActiveSite();
   if (!site) return;
-  downloadSite(site);
+  await downloadSite(site);
   clearCacheState();
 }
 
@@ -945,7 +994,17 @@ async function _doCloseSite(withSave) {
   const site = getActiveSite();
   if (!site) return;
 
-  if (withSave) downloadSite(site);
+  if (withSave) await downloadSite(site);
+
+  // Libère tous les Blobs du site (illustration, plans, photos)
+  if (site.illustrationId) imageStore.deleteImage(site.illustrationId);
+  for (const sp of site.sitePlans || []) if (sp.imageId) imageStore.deleteImage(sp.imageId);
+  for (const bld of site.buildings || []) {
+    for (const fl of bld.floors || []) if (fl.imageId) imageStore.deleteImage(fl.imageId);
+  }
+  for (const pt of site.points || []) {
+    for (const ph of pt.photos || []) if (ph.imageId) imageStore.deleteImage(ph.imageId);
+  }
 
   const siteId = site.id;
 
@@ -1506,7 +1565,7 @@ function cancelOrientPoint() {
 // ===== SIDEBAR =====
 function renderSiteHeader() {
   const site = getActiveSite();
-  document.getElementById('site-header-icon').textContent = site ? (site.icon || '🏛') : '';
+  document.getElementById('site-header-icon').innerHTML = site ? renderIcon(site.icon || 'landmark') : '';
   document.getElementById('site-header-name').textContent = site ? site.name : 'Aucun site sélectionné';
   document.getElementById('btn-deselect-site').classList.toggle('hidden', !site);
   document.getElementById('btn-site-options').classList.toggle('hidden', !site);
@@ -1561,7 +1620,7 @@ function renderSidebar() {
   (site.buildings || []).forEach(building => {
     const bh = document.createElement('div');
     bh.className = 'nav-building-header';
-    bh.innerHTML = `<span>${escapeHtml(building.icon || '🏢')}</span>
+    bh.innerHTML = `<span class="nav-bld-icon">${renderIcon(building.icon || 'building')}</span>
                     <span style="flex:1">${escapeHtml(building.name)}</span>
                     <button class="nav-bld-edit" title="Modifier">⚙</button>
                     <button class="nav-bld-del" title="Supprimer">🗑</button>`;
@@ -1666,10 +1725,9 @@ async function confirmAddFloor() {
 
   const name = document.getElementById('new-floor-name').value.trim() || 'Étage';
   const file = document.getElementById('input-floor-plan').files[0];
-  let dataURL = null;
-  if (file) dataURL = await fileToDataURL(file);
+  const imageId = file ? await imageStore.putBlob(file) : null;
 
-  const floor = { id: uid(), name, imageDataURL: dataURL || null };
+  const floor = { id: uid(), name, imageId };
   building.floors.push(floor);
   hideModal('modal-add-floor');
   selectFloor(building.id, floor.id);
@@ -1679,6 +1737,15 @@ function deleteFloor(buildingId, floorId) {
   const site     = getActiveSite();
   const building = site?.buildings.find(b => b.id === buildingId);
   if (!building || !confirm('Supprimer ce niveau et toutes ses photos ?')) return;
+
+  // Libère les Blobs (plan d'étage + photos rattachées à ce floor)
+  const floor = building.floors.find(f => f.id === floorId);
+  if (floor?.imageId) imageStore.deleteImage(floor.imageId);
+  for (const p of site.points) {
+    if (p.buildingId === buildingId && p.floorId === floorId) {
+      for (const ph of p.photos) if (ph.imageId) imageStore.deleteImage(ph.imageId);
+    }
+  }
 
   site.points = site.points.filter(p => !(p.buildingId === buildingId && p.floorId === floorId));
   building.floors = building.floors.filter(f => f.id !== floorId);
@@ -1703,10 +1770,9 @@ async function confirmAddSitePlan() {
 
   const name = document.getElementById('new-siteplan-name').value.trim() || 'Plan';
   const file = document.getElementById('input-siteplan-file').files[0];
-  let dataURL = null;
-  if (file) dataURL = await fileToDataURL(file);
+  const imageId = file ? await imageStore.putBlob(file) : null;
 
-  const sp = { id: uid(), name, imageDataURL: dataURL || null };
+  const sp = { id: uid(), name, imageId };
   site.sitePlans.push(sp);
   hideModal('modal-add-siteplan');
   selectSitePlan(sp.id);
@@ -1715,6 +1781,15 @@ async function confirmAddSitePlan() {
 function deleteSitePlan(planId) {
   const site = getActiveSite();
   if (!site || !confirm('Supprimer ce plan de site ?')) return;
+
+  // Libère les Blobs (plan + photos rattachées)
+  const sp = site.sitePlans.find(s => s.id === planId);
+  if (sp?.imageId) imageStore.deleteImage(sp.imageId);
+  for (const p of site.points) {
+    if (p.sitePlanId === planId) {
+      for (const ph of p.photos) if (ph.imageId) imageStore.deleteImage(ph.imageId);
+    }
+  }
 
   site.points    = site.points.filter(p => p.sitePlanId !== planId);
   site.sitePlans = site.sitePlans.filter(sp => sp.id !== planId);
@@ -1729,7 +1804,7 @@ function deleteSitePlan(planId) {
 // ===== FLOOR PLAN RENDERING =====
 function getActivePlan() { return _getActivePlan(state, getActiveSite()); }
 
-function renderPlan() {
+async function renderPlan() {
   const active = getActivePlan();
   if (!active) return;
 
@@ -1738,7 +1813,8 @@ function renderPlan() {
   const canvas   = document.getElementById('plan-canvas');
   const viewport = document.getElementById('plan-viewport');
 
-  if (!active.imageDataURL) {
+  const url = active.imageId ? await imageStore.getURL(active.imageId) : null;
+  if (!url) {
     canvas.width = 0; canvas.height = 0;
     renderPlanMarkers();
     return;
@@ -1755,20 +1831,28 @@ function renderPlan() {
     drawPlanCanvas();
     renderPlanMarkers();
   };
-  img.src = active.imageDataURL;
+  img.src = url;
 }
 
-function updateActivePlanImage(dataURL) {
+function updateActivePlanImage(imageId) {
   const site = getActiveSite();
   if (!site) return;
 
   if (state.activeSitePlanId) {
     const sp = site.sitePlans?.find(sp => sp.id === state.activeSitePlanId);
-    if (sp) { sp.imageDataURL = dataURL; renderPlan(); }
+    if (sp) {
+      if (sp.imageId) imageStore.deleteImage(sp.imageId);
+      sp.imageId = imageId;
+      renderPlan();
+    }
   } else if (state.activeBuildingId && state.activeFloorId) {
     const bld   = site.buildings?.find(b => b.id === state.activeBuildingId);
     const floor = bld?.floors?.find(f => f.id === state.activeFloorId);
-    if (floor) { floor.imageDataURL = dataURL; renderPlan(); }
+    if (floor) {
+      if (floor.imageId) imageStore.deleteImage(floor.imageId);
+      floor.imageId = imageId;
+      renderPlan();
+    }
   }
 }
 
@@ -2168,12 +2252,11 @@ async function confirmAddPhoto() {
   const newPhotos = [];
   for (let i = 0; i < files.length; i++) {
     const file    = files[i];
-    const dataURL = await fileToDataURL(file);
-    const thumb   = await makeThumbnail(dataURL);
+    const imageId = await imageStore.putBlob(file);
     const title   = baseTitle
       ? (multi ? `${baseTitle} ${i + 1}` : baseTitle)
       : file.name.replace(/\.[^.]+$/, '');
-    newPhotos.push({ id: uid(), title, description: desc, dataURL, thumbnail: thumb });
+    newPhotos.push({ id: uid(), title, description: desc, imageId });
   }
 
   let point;
@@ -2216,6 +2299,9 @@ function deletePoint(pointId) {
     : 'Supprimer ce point ?';
   if (!confirm(msg)) return;
 
+  // Libère les Blobs des photos supprimées
+  for (const ph of point.photos) if (ph.imageId) imageStore.deleteImage(ph.imageId);
+
   site.points = site.points.filter(p => p.id !== pointId);
   removePointMarker(pointId);
   renderPlanMarkers();
@@ -2233,6 +2319,7 @@ function deletePhotoFromActivePoint(photoId) {
   // Si c'est la dernière photo, on supprime le point entier
   if (point.photos.length === 1) {
     if (!confirm('C\'est la dernière photo de ce point. Supprimer le point ?')) return;
+    if (point.photos[0].imageId) imageStore.deleteImage(point.photos[0].imageId);
     site.points = site.points.filter(p => p.id !== point.id);
     removePointMarker(point.id);
     renderPlanMarkers();
@@ -2242,7 +2329,8 @@ function deletePhotoFromActivePoint(photoId) {
   }
 
   if (!confirm('Supprimer cette photo ?')) return;
-  point.photos.splice(idx, 1);
+  const removed = point.photos.splice(idx, 1)[0];
+  if (removed?.imageId) imageStore.deleteImage(removed.imageId);
 
   if (point.lat != null) refreshPointMarker(point.id);
   else renderPlanMarkers();
@@ -2276,7 +2364,7 @@ function openViewer(pointId, photoId = null) {
   updateGalleryNav();
 }
 
-function _renderViewerPhoto(point, photo) {
+async function _renderViewerPhoto(point, photo) {
   document.getElementById('viewer-panel').classList.remove('hidden');
   document.getElementById('viewer-title').textContent = photo.title || 'Photo';
 
@@ -2284,17 +2372,19 @@ function _renderViewerPhoto(point, photo) {
   document.getElementById('panorama-viewer').classList.add('hidden');
   if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
 
+  const url = photo.imageId ? await imageStore.getURL(photo.imageId) : '';
+
   if (point.type === '360') {
     document.getElementById('panorama-viewer').classList.remove('hidden');
-    if (photo.dataURL) {
+    if (url) {
       pannellumViewer = pannellum.viewer('pannellum-container', {
-        type: 'equirectangular', panorama: photo.dataURL, autoLoad: true, showControls: true,
+        type: 'equirectangular', panorama: url, autoLoad: true, showControls: true,
         northOffset: point.bearing || 0,
       });
     }
   } else {
     document.getElementById('classic-viewer').classList.remove('hidden');
-    document.getElementById('classic-photo-img').src = photo.dataURL || '';
+    document.getElementById('classic-photo-img').src = url;
     document.getElementById('classic-photo-caption').textContent = photo.description || '';
   }
 
@@ -2382,10 +2472,15 @@ function renderIconBank(containerId, icons, selected, onSelect) {
   });
 }
 
-function updateSfIllustrationPreview(dataURL) {
+async function updateSfIllustrationPreview(imageId) {
   const p = document.getElementById('sf-illustration-preview');
-  p.innerHTML = dataURL
-    ? `<img class="illus-img" src="${dataURL}" alt="Illustration" />`
+  if (!imageId) {
+    p.innerHTML = '<div class="illus-empty">Aucune illustration</div>';
+    return;
+  }
+  const url = await imageStore.getURL(imageId);
+  p.innerHTML = url
+    ? `<img class="illus-img" src="${url}" alt="Illustration" />`
     : '<div class="illus-empty">Aucune illustration</div>';
 }
 
@@ -2477,7 +2572,13 @@ function init() {
   document.getElementById('input-sf-illustration').addEventListener('change', async e => {
     const file = e.target.files[0];
     if (!file) return;
-    sfTempIllustration = await fileToDataURL(file);
+    // Si une illustration fraîche (pas encore confirmée) existe, on libère son Blob.
+    const site = sfEditingId ? state.sites.find(s => s.id === sfEditingId) : null;
+    const original = site?.illustrationId || null;
+    if (sfTempIllustration && sfTempIllustration !== original) {
+      imageStore.deleteImage(sfTempIllustration);
+    }
+    sfTempIllustration = await imageStore.putBlob(file);
     updateSfIllustrationPreview(sfTempIllustration);
   });
   document.getElementById('btn-sf-clear-illustration').addEventListener('click', () => {
@@ -2516,8 +2617,8 @@ function init() {
   document.getElementById('input-upload-plan').addEventListener('change', async e => {
     const file = e.target.files[0];
     if (!file) return;
-    const dataURL = await fileToDataURL(file);
-    updateActivePlanImage(dataURL);
+    const imageId = await imageStore.putBlob(file);
+    updateActivePlanImage(imageId);
   });
 
   // ---- Viewer / editor ----
@@ -2540,9 +2641,9 @@ function init() {
     const photo = getActivePhoto();
     const point = getActivePoint();
     if (!photo || !point) return;
-    photo.dataURL   = await fileToDataURL(file);
-    photo.thumbnail = await makeThumbnail(photo.dataURL);
-    _renderViewerPhoto(point, photo);
+    if (photo.imageId) imageStore.deleteImage(photo.imageId);
+    photo.imageId = await imageStore.putBlob(file);
+    await _renderViewerPhoto(point, photo);
     scheduleCacheSave();
   });
 

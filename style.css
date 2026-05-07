@@ -86,7 +86,10 @@ html, body {
   min-height: 44px;
 }
 
-#site-header-icon { font-size: 18px; flex-shrink: 0; }
+#site-header-icon { font-size: 18px; flex-shrink: 0; display: inline-flex; align-items: center; }
+#site-header-icon svg { width: 18px; height: 18px; }
+.nav-bld-icon { display: inline-flex; align-items: center; }
+.nav-bld-icon svg { width: 14px; height: 14px; }
 
 #site-header-name {
   flex: 1;

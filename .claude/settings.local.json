@@ -23,7 +23,8 @@
       "Bash(node --check icons.js)",
       "Bash(git fetch *)",
       "Bash(git stash *)",
-      "Bash(git pull *)"
+      "Bash(git pull *)",
+      "Bash(node --check imageStore.js)"
     ]
   }
 }
