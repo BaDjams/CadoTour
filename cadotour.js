@@ -10,6 +10,7 @@ import {
 import * as imageStore from './imageStore.js';
 import { renderIcon } from './icons.js';
 import * as progress from './progress.js';
+import { initViewerSplitter, showResizer, hideResizer } from './splitter.js';
 
 // ===== STATE =====
 const state = {
@@ -662,6 +663,7 @@ function openViewer(pointId) {
 
 async function _renderViewerPhoto(point, photo) {
   document.getElementById('viewer-panel').classList.remove('hidden');
+  showResizer();
   document.getElementById('viewer-title').textContent = photo.title || 'Photo';
 
   document.getElementById('classic-viewer').classList.add('hidden');
@@ -720,6 +722,7 @@ function closeViewer() {
   state.activePhotoId = null;
   viewerGalleryIdx    = 0;
   document.getElementById('viewer-panel').classList.add('hidden');
+  hideResizer();
   if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
   refreshMarkerActive();
   renderPlanMarkers();
@@ -780,6 +783,7 @@ function _doCloseSite() {
 
 // ===== INIT =====
 function init() {
+  initViewerSplitter();
   initMap();
   initPlanEvents();
   renderSiteHeader();

@@ -407,12 +407,41 @@ html, body {
   transform: translate(-50%, 8px);
 }
 
+/* ===== VIEWER RESIZER ===== */
+#viewer-resizer {
+  width: 6px;
+  min-width: 6px;
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  z-index: 20;
+  flex-shrink: 0;
+  transition: background var(--transition);
+}
+#viewer-resizer::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 32px;
+  border-radius: 2px;
+  background: var(--color-border);
+  transition: background var(--transition), height var(--transition);
+}
+#viewer-resizer:hover { background: rgba(233, 69, 96, 0.08); }
+#viewer-resizer:hover::after { background: var(--color-accent); height: 48px; }
+#viewer-resizer.dragging { background: rgba(233, 69, 96, 0.14); }
+#viewer-resizer.dragging::after { background: var(--color-accent); height: 56px; }
+#viewer-resizer.hidden { display: none; }
+
 /* ===== RIGHT VIEWER PANEL ===== */
 #viewer-panel {
   width: var(--viewer-width);
-  min-width: var(--viewer-width);
+  min-width: 160px;
   background: var(--color-surface);
-  border-left: 1px solid var(--color-border);
+  border-left: none;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1094,11 +1123,12 @@ textarea.input-field { resize: vertical; min-height: 60px; }
 /* ===== RESPONSIVE ===== */
 @media (max-width: 900px) {
   #sidebar { width: 180px; min-width: 180px; }
-  #viewer-panel { width: 300px; min-width: 300px; }
+  #viewer-panel { width: 300px; min-width: 160px; }
 }
 @media (max-width: 650px) {
   #sidebar { display: none; }
-  #viewer-panel { width: 100%; position: fixed; bottom: 0; left: 0; right: 0; height: 50vh; border-top: 1px solid var(--color-border); }
+  #viewer-resizer { display: none; }
+  #viewer-panel { width: 100%; min-width: unset; position: fixed; bottom: 0; left: 0; right: 0; height: 50vh; border-top: 1px solid var(--color-border); }
 }
 
 /* ===== HAMBURGER / MOBILE MENU ===== */

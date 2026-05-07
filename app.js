@@ -11,6 +11,7 @@ import {
 import { SITE_ICONS, BUILDING_ICONS, renderIcon } from './icons.js';
 import * as imageStore from './imageStore.js';
 import * as progress from './progress.js';
+import { initViewerSplitter, showResizer, hideResizer } from './splitter.js';
 
 // ===== CACHE (IndexedDB — pas de limite de taille) =====
 const DB_STORE = imageStore.STORE_STATE_NAME;
@@ -2441,6 +2442,7 @@ function openViewer(pointId, photoId = null) {
 
 async function _renderViewerPhoto(point, photo) {
   document.getElementById('viewer-panel').classList.remove('hidden');
+  showResizer();
   document.getElementById('viewer-title').textContent = photo.title || 'Photo';
 
   document.getElementById('classic-viewer').classList.add('hidden');
@@ -2475,6 +2477,7 @@ function closeViewer() {
   state.activePhotoId = null;
   viewerGalleryIdx    = 0;
   document.getElementById('viewer-panel').classList.add('hidden');
+  hideResizer();
   if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
   refreshMarkerActive();
   renderPlanMarkers();
@@ -2589,6 +2592,7 @@ function renderSfContacts() {
 
 // ===== INIT =====
 function init() {
+  initViewerSplitter();
   initMap();
   initSearch();
   initPlanEvents();
