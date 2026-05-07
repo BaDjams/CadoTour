@@ -129,6 +129,8 @@ let moveBuildingId   = null;
 let moveSiteId       = null;
 let perimeterPoints  = [];
 let perimeterPolyline = null;
+let perimeterRubberBand = null;
+let perimeterFirstMarker = null;
 let orientLine       = null;
 
 // ===== FLOOR PLAN =====
@@ -167,6 +169,9 @@ let bfTempIcon = '🏢';
 
 // ===== FLOOR FORM TEMP =====
 let addFloorBuildingId = null;
+
+// ===== BUILDING EDIT TEMP =====
+let editBuildingId = null;
 
 // ===== SEARCH =====
 let searchTimer = null;
@@ -226,7 +231,7 @@ function showModal(id) {
 function hideModal(id) {
   document.getElementById(id).classList.add('hidden');
   const modalIds = ['modal-site-form','modal-add-photo','modal-add-floor',
-                    'modal-add-building','modal-add-siteplan','modal-step-prompt','modal-close-site'];
+                    'modal-add-building','modal-add-siteplan','modal-step-prompt','modal-close-site','modal-edit-building'];
   const anyOpen = modalIds.some(
     mid => mid !== id && !document.getElementById(mid).classList.contains('hidden')
   );
@@ -337,13 +342,25 @@ function onMapRightClick(e) {
     ]);
   } else {
     showMapContextMenu(pt, [
-      { label: '📷 Ajouter une photo ici', action: () => openPhotoTypeMenu(latlng) },
+      { label: '📷 Photo normale (45°)',      action: () => startAddPhotoAt(latlng.lat, latlng.lng, 'normal') },
+      { label: '🌅 Photo panoramique (120°)', action: () => startAddPhotoAt(latlng.lat, latlng.lng, 'panoramic') },
+      { label: '🔵 Photo 360°',               action: () => startAddPhotoAt(latlng.lat, latlng.lng, '360') },
+      { label: '🚁 Vue drone',                action: () => startAddPhotoAt(latlng.lat, latlng.lng, 'drone') },
+      { label: null },
       { label: '🏢 Ajouter un bâtiment ici', action: () => openBuildingForm(latlng.lat, latlng.lng) },
     ]);
   }
 }
 
 function onMapMousemove(e) {
+  if (interactionMode === 'perimeter-draw' && perimeterPoints.length > 0) {
+    if (perimeterRubberBand) { perimeterRubberBand.remove(); perimeterRubberBand = null; }
+    const lastPt = perimeterPoints[perimeterPoints.length - 1];
+    perimeterRubberBand = L.polyline([lastPt, [e.latlng.lat, e.latlng.lng]], {
+      color: 'red', dashArray: '4 3', weight: 1.5, opacity: 0.5,
+    }).addTo(map);
+    return;
+  }
   if (interactionMode !== 'orient-point') return;
   const site  = getActiveSite();
   const point = site?.points.find(p => p.id === orientPointId);
@@ -475,6 +492,74 @@ function placeSearchResult(lat, lon, label) {
 }
 
 // ===== SITE MANAGEMENT =====
+function renderSfPerimeterSection(site) {
+  const section = document.getElementById('sf-perimeter-section');
+  section.innerHTML = '';
+
+  const makeGroup = (labelText, btns) => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:10px';
+    const lbl = document.createElement('div');
+    lbl.className = 'modal-sub-label';
+    lbl.textContent = labelText;
+    wrap.appendChild(lbl);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+    btns.forEach(({ text, cls, onClick }) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = cls; b.textContent = text;
+      b.addEventListener('click', onClick);
+      row.appendChild(b);
+    });
+    wrap.appendChild(row);
+    section.appendChild(wrap);
+  };
+
+  // ── Périmètre ──
+  const perimBtns = [
+    {
+      text: site.perimeter ? '🗺 Redéfinir' : '🗺 Tracer le périmètre',
+      cls: 'btn-secondary btn-sm',
+      onClick: () => { hideModal('modal-site-form'); startPerimeterDraw(site.id); },
+    },
+  ];
+  if (site.perimeter) {
+    perimBtns.push({
+      text: site.perimeterHidden ? '👁 Afficher' : '🚫 Masquer',
+      cls: 'btn-secondary btn-sm',
+      onClick: () => { toggleSitePerimeter(site); renderSfPerimeterSection(site); },
+    });
+    perimBtns.push({
+      text: '🗑 Supprimer',
+      cls: 'btn-danger btn-sm',
+      onClick: () => { site.perimeter = null; renderSitePerimeter(site); renderSfPerimeterSection(site); },
+    });
+  }
+  makeGroup('Périmètre du site', perimBtns);
+
+  // ── Flèche d'accès ──
+  const arrowBtns = [
+    {
+      text: site.accessArrow ? '↖ Repositionner' : '↖ Placer la flèche',
+      cls: 'btn-secondary btn-sm',
+      onClick: () => { hideModal('modal-site-form'); startAccessArrowPlacement(site.id); },
+    },
+  ];
+  if (site.accessArrow) {
+    arrowBtns.push({
+      text: site.accessArrowHidden ? '👁 Afficher' : '🚫 Masquer',
+      cls: 'btn-secondary btn-sm',
+      onClick: () => { toggleSiteAccessArrow(site); renderSfPerimeterSection(site); },
+    });
+    arrowBtns.push({
+      text: '🗑 Supprimer',
+      cls: 'btn-danger btn-sm',
+      onClick: () => { site.accessArrow = null; renderAccessArrow(site); renderSfPerimeterSection(site); },
+    });
+  }
+  makeGroup('Flèche d\'accès principal', arrowBtns);
+}
+
 function openSiteForm(siteId, lat, lon, address) {
   sfEditingId = siteId;
 
@@ -482,6 +567,7 @@ function openSiteForm(siteId, lat, lon, address) {
   document.getElementById('modal-site-form-title').textContent = site ? 'Options du site' : 'Nouveau site';
   document.getElementById('btn-sf-confirm').textContent = site ? 'Sauvegarder' : 'Créer le site';
   document.getElementById('sf-perimeter-row').classList.toggle('hidden', !siteId);
+  if (site) renderSfPerimeterSection(site);
 
   document.getElementById('sf-name').value    = site?.name    || '';
   document.getElementById('sf-address').value = site?.address || address || '';
@@ -591,21 +677,35 @@ function startPerimeterDraw(siteId) {
 
   document.getElementById('map').classList.add('map-cursor-crosshair');
   setStepBanner(
-    'Cliquez pour ajouter des points au périmètre. Double-clic pour fermer.',
+    'Cliquez pour ajouter des points. Cliquez près du point de départ (⬤) pour fermer.',
     [
       { label: 'Fermer le périmètre', primary: true,  action: finishPerimeter },
       { label: 'Annuler',             primary: false, action: cancelPerimeter },
     ]
   );
 
-  map.once('dblclick', e => {
-    L.DomEvent.stopPropagation(e);
-    finishPerimeter();
-  });
+  map.on('mousemove', onMapMousemove);
 }
 
 function addPerimeterPoint(latlng) {
+  // Close the polygon when clicking near the first point (≥ 3 points already placed)
+  if (perimeterPoints.length >= 3) {
+    const px1 = map.latLngToContainerPoint(perimeterPoints[0]);
+    const px2 = map.latLngToContainerPoint(latlng);
+    if (Math.hypot(px1.x - px2.x, px1.y - px2.y) < 20) {
+      finishPerimeter();
+      return;
+    }
+  }
+
   perimeterPoints.push([latlng.lat, latlng.lng]);
+
+  // Show the origin marker on first click
+  if (perimeterPoints.length === 1) {
+    perimeterFirstMarker = L.circleMarker([latlng.lat, latlng.lng], {
+      radius: 7, color: 'white', weight: 2, fillColor: 'red', fillOpacity: 0.9,
+    }).addTo(map);
+  }
 
   if (perimeterPolyline) perimeterPolyline.remove();
   if (perimeterPoints.length >= 2) {
@@ -616,10 +716,12 @@ function addPerimeterPoint(latlng) {
 }
 
 function finishPerimeter() {
+  map.off('mousemove', onMapMousemove);
   clearStepBanner();
   document.getElementById('map').classList.remove('map-cursor-crosshair');
-  map.off('dblclick');
 
+  if (perimeterRubberBand) { perimeterRubberBand.remove(); perimeterRubberBand = null; }
+  if (perimeterFirstMarker) { perimeterFirstMarker.remove(); perimeterFirstMarker = null; }
   if (perimeterPolyline) { perimeterPolyline.remove(); perimeterPolyline = null; }
 
   const site = state.sites.find(s => s.id === interactionSiteId);
@@ -634,9 +736,11 @@ function finishPerimeter() {
 }
 
 function cancelPerimeter() {
+  map.off('mousemove', onMapMousemove);
   clearStepBanner();
   document.getElementById('map').classList.remove('map-cursor-crosshair');
-  map.off('dblclick');
+  if (perimeterRubberBand) { perimeterRubberBand.remove(); perimeterRubberBand = null; }
+  if (perimeterFirstMarker) { perimeterFirstMarker.remove(); perimeterFirstMarker = null; }
   if (perimeterPolyline) { perimeterPolyline.remove(); perimeterPolyline = null; }
   interactionMode = null;
   perimeterPoints = [];
@@ -646,6 +750,7 @@ function cancelPerimeter() {
 function renderSitePerimeter(site) {
   if (perimeterLayer) { perimeterLayer.remove(); perimeterLayer = null; }
   if (!site?.perimeter?.points?.length) return;
+  if (site.perimeterHidden) return;
   const pts = site.perimeter.points.map(p => [p.lat, p.lon]);
   perimeterLayer = L.polygon(pts, {
     color: 'red', dashArray: '8 6', weight: 2, fill: false, opacity: 0.8,
@@ -685,9 +790,20 @@ function cancelAccessArrow() {
   runNextStep();
 }
 
+function toggleSitePerimeter(site) {
+  site.perimeterHidden = !site.perimeterHidden;
+  renderSitePerimeter(site);
+}
+
+function toggleSiteAccessArrow(site) {
+  site.accessArrowHidden = !site.accessArrowHidden;
+  renderAccessArrow(site);
+}
+
 function renderAccessArrow(site) {
   if (accessArrowMarker) { accessArrowMarker.remove(); accessArrowMarker = null; }
   if (!site?.accessArrow) return;
+  if (site.accessArrowHidden) return;
 
   const a = site.accessArrow;
   const icon = makeAccessArrowIcon(a.bearing);
@@ -958,6 +1074,65 @@ function addSiteMarker(site) {
   siteMarkers[site.id] = m;
 }
 
+// ===== BUILDING EDIT MODAL =====
+function openEditBuildingModal(buildingId) {
+  editBuildingId = buildingId;
+  const site = getActiveSite();
+  const building = site?.buildings.find(b => b.id === buildingId);
+  if (!building) return;
+  document.getElementById('edit-bld-name').value = building.name;
+  renderEditBuildingFloors(building);
+  showModal('modal-edit-building');
+}
+
+function renderEditBuildingFloors(building) {
+  const list = document.getElementById('edit-bld-floors-list');
+  list.innerHTML = '';
+  if (!building.floors.length) {
+    const empty = document.createElement('p');
+    empty.className = 'text-muted';
+    empty.style.padding = '6px 0';
+    empty.textContent = 'Aucun niveau';
+    list.appendChild(empty);
+    return;
+  }
+  building.floors.forEach((floor, i) => {
+    const row = document.createElement('div');
+    row.className = 'edit-bld-floor-row';
+    row.innerHTML = `
+      <input type="text" class="input-field" value="${escapeHtml(floor.name)}" data-floor-id="${floor.id}" />
+      <button class="btn-icon btn-sm" ${i === 0 ? 'disabled' : ''} data-move="up" data-idx="${i}" title="Monter">↑</button>
+      <button class="btn-icon btn-sm" ${i === building.floors.length - 1 ? 'disabled' : ''} data-move="down" data-idx="${i}" title="Descendre">↓</button>`;
+    list.appendChild(row);
+  });
+  list.querySelectorAll('[data-move]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const site = getActiveSite();
+      const bld = site?.buildings.find(b => b.id === editBuildingId);
+      if (!bld) return;
+      const idx = parseInt(btn.dataset.idx);
+      const newIdx = idx + (btn.dataset.move === 'up' ? -1 : 1);
+      if (newIdx < 0 || newIdx >= bld.floors.length) return;
+      [bld.floors[idx], bld.floors[newIdx]] = [bld.floors[newIdx], bld.floors[idx]];
+      renderEditBuildingFloors(bld);
+    });
+  });
+}
+
+function confirmEditBuilding() {
+  const site = getActiveSite();
+  const building = site?.buildings.find(b => b.id === editBuildingId);
+  if (!building) return;
+  const newName = document.getElementById('edit-bld-name').value.trim();
+  if (newName) building.name = newName;
+  document.querySelectorAll('#edit-bld-floors-list [data-floor-id]').forEach(input => {
+    const floor = building.floors.find(f => f.id === input.dataset.floorId);
+    if (floor && input.value.trim()) floor.name = input.value.trim();
+  });
+  hideModal('modal-edit-building');
+  renderSidebar();
+}
+
 function removeSiteMarker(siteId) {
   if (siteMarkers[siteId]) { siteMarkers[siteId].remove(); delete siteMarkers[siteId]; }
 }
@@ -1062,6 +1237,19 @@ function makePointIcon(type, bearing, isActive, count = 1) {
     svgInner = `
       <path d="M0,0 L-15.6,-9 A18,18,0,0,1,15.6,-9 Z" fill="#e07b20" opacity="0.75"/>
       <circle r="6" fill="#e07b20" stroke="white" stroke-width="${isActive ? 2.5 : 1.5}"/>`;
+  } else if (type === 'drone') {
+    size = 52; anchor = 26;
+    svgInner = `
+      <path d="M0,0 L-15.6,-9 A18,18,0,0,1,15.6,-9 Z" fill="#8e44ad" opacity="0.75"/>
+      <line x1="0" y1="0" x2="-7" y2="-7" stroke="white" stroke-width="1.5"/>
+      <line x1="0" y1="0" x2="7" y2="-7" stroke="white" stroke-width="1.5"/>
+      <line x1="0" y1="0" x2="-7" y2="7" stroke="white" stroke-width="1.5"/>
+      <line x1="0" y1="0" x2="7" y2="7" stroke="white" stroke-width="1.5"/>
+      <circle cx="-7" cy="-7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/>
+      <circle cx="7" cy="-7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/>
+      <circle cx="-7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/>
+      <circle cx="7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/>
+      <rect x="-3" y="-3" width="6" height="6" rx="1" fill="#8e44ad" stroke="white" stroke-width="${isActive ? 2 : 1.3}"/>`;
   } else {
     size = 40; anchor = 20;
     svgInner = `
@@ -1371,7 +1559,12 @@ function renderSidebar() {
     bh.className = 'nav-building-header';
     bh.innerHTML = `<span>${escapeHtml(building.icon || '🏢')}</span>
                     <span style="flex:1">${escapeHtml(building.name)}</span>
+                    <button class="nav-bld-edit" title="Modifier">⚙</button>
                     <button class="nav-bld-del" title="Supprimer">🗑</button>`;
+    bh.querySelector('.nav-bld-edit').addEventListener('click', e => {
+      e.stopPropagation();
+      openEditBuildingModal(building.id);
+    });
     bh.querySelector('.nav-bld-del').addEventListener('click', e => {
       e.stopPropagation();
       deleteBuilding(building.id);
@@ -1596,7 +1789,7 @@ function renderPlanMarkers() {
     const sx = point.planX * plan.scale + plan.offsetX;
     const sy = point.planY * plan.scale + plan.offsetY;
     const isActive = point.id === state.activePointId;
-    const color = point.type === '360' ? '#2980b9' : point.type === 'panoramic' ? '#e07b20' : '#e94560';
+    const color = point.type === '360' ? '#2980b9' : point.type === 'panoramic' ? '#e07b20' : point.type === 'drone' ? '#8e44ad' : '#e94560';
 
     const isGhost = planMovePointId === point.id;
 
@@ -1609,7 +1802,7 @@ function renderPlanMarkers() {
     const rot = point.bearing || 0;
     if (point.type === 'normal') {
       wedge.setAttribute('d', 'M0,0 L-5,-12 A13,13,0,0,1,5,-12 Z');
-    } else if (point.type === 'panoramic') {
+    } else if (point.type === 'panoramic' || point.type === 'drone') {
       wedge.setAttribute('d', 'M0,0 L-11,-6.5 A13,13,0,0,1,11,-6.5 Z');
     } else {
       wedge.setAttribute('d', `M0,-11 A11,11,0,1,1,-0.01,-11 Z`);
@@ -1813,6 +2006,7 @@ function startMovePlanPoint(point) {
 function photoAddLabel(type) {
   if (type === 'panoramic') return '🌅 Ajouter une photo panoramique';
   if (type === '360')       return '🔵 Ajouter une photo 360°';
+  if (type === 'drone')     return '🚁 Ajouter une vue drone';
   return '📷 Ajouter une photo normale';
 }
 
@@ -1940,7 +2134,7 @@ function updatePhotoFileList() {
 }
 
 function openAddPhotoModal(type) {
-  const titles = { normal: 'Photo normale', panoramic: 'Photo panoramique (120°)', '360': 'Photo 360°' };
+  const titles = { normal: 'Photo normale', panoramic: 'Photo panoramique (120°)', '360': 'Photo 360°', drone: 'Vue drone' };
   document.getElementById('modal-add-photo-title').textContent = 'Ajouter : ' + (titles[type] || type);
   document.getElementById('input-new-photo-file').value = '';
   document.getElementById('new-photo-title').value = '';
@@ -2287,15 +2481,13 @@ function init() {
     updateSfIllustrationPreview(null);
   });
 
-  document.getElementById('btn-sf-redefine-perimeter').addEventListener('click', () => {
-    const siteId = sfEditingId;
-    hideModal('modal-site-form');
-    if (siteId) startPerimeterDraw(siteId);
-  });
-
   // ---- Building form ----
   document.getElementById('btn-bf-confirm').addEventListener('click', confirmBuildingForm);
   document.getElementById('btn-bf-cancel').addEventListener('click', () => hideModal('modal-add-building'));
+
+  // ---- Edit building modal ----
+  document.getElementById('btn-edit-bld-confirm').addEventListener('click', confirmEditBuilding);
+  document.getElementById('btn-edit-bld-cancel').addEventListener('click', () => hideModal('modal-edit-building'));
 
   // ---- Add floor modal ----
   document.getElementById('btn-create-floor').addEventListener('click', confirmAddFloor);

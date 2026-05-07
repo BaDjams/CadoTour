@@ -197,12 +197,31 @@
     </div>
 
     <div id="sf-perimeter-row" class="modal-row hidden">
-      <button id="btn-sf-redefine-perimeter" class="btn-secondary" type="button">🗺 Redéfinir les limites du site</button>
+      <div id="sf-perimeter-section"></div>
     </div>
 
     <div class="modal-actions">
       <button id="btn-sf-confirm" class="btn-primary">Créer le site</button>
       <button id="btn-sf-cancel" class="btn-secondary">Annuler</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit building modal (rename / reorder floors) -->
+<div id="modal-edit-building" class="modal hidden">
+  <div class="modal-box">
+    <h2>Modifier le bâtiment</h2>
+    <div class="modal-row">
+      <label>Nom du bâtiment</label>
+      <input id="edit-bld-name" type="text" class="input-field" />
+    </div>
+    <div class="modal-row">
+      <label>Niveaux</label>
+      <div id="edit-bld-floors-list"></div>
+    </div>
+    <div class="modal-actions">
+      <button id="btn-edit-bld-confirm" class="btn-primary">Sauvegarder</button>
+      <button id="btn-edit-bld-cancel" class="btn-secondary">Annuler</button>
     </div>
   </div>
 </div>

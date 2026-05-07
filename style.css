@@ -9,6 +9,7 @@
   --color-360: #2980b9;
   --color-panoramic: #e07b20;
   --color-normal: #e94560;
+  --color-drone: #8e44ad;
   --color-group: #27ae60;
   --color-text: #e0e0e0;
   --color-text-muted: #9098a9;
@@ -165,18 +166,28 @@ html, body {
   cursor: default;
   user-select: none;
 }
+.nav-building-header .nav-bld-edit,
 .nav-building-header .nav-bld-del {
-  margin-left: auto;
   opacity: 0;
   background: none;
   border: none;
-  color: var(--color-danger);
   cursor: pointer;
   font-size: 12px;
   padding: 1px 4px;
   border-radius: 3px;
 }
+.nav-building-header .nav-bld-edit { margin-left: auto; color: var(--color-text-muted); }
+.nav-building-header .nav-bld-del  { color: var(--color-danger); }
+.nav-building-header:hover .nav-bld-edit,
 .nav-building-header:hover .nav-bld-del { opacity: 1; }
+
+.edit-bld-floor-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.edit-bld-floor-row .input-field { flex: 1; }
 
 .nav-add-btn {
   display: block;
@@ -686,6 +697,14 @@ html, body {
 .modal-box h2 { font-size: 18px; font-weight: 700; color: var(--color-accent); }
 
 .modal-row { display: flex; flex-direction: column; gap: 6px; }
+.modal-sub-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
 .modal-row label {
   font-size: 11px;
   font-weight: 700;
