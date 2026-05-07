@@ -241,7 +241,7 @@ function makePointIcon(type, bearing, isActive, count = 1) {
   const glow  = isActive
     ? `drop-shadow(0 0 8px ${color}) drop-shadow(0 0 14px rgba(255,255,255,0.95))`
     : 'drop-shadow(0 1px 4px rgba(0,0,0,0.6))';
-  const scale = isActive ? 'scale(1.12)' : '';
+  const scale = isActive ? 'scale(1.15)' : '';
   return L.divIcon({
     className: '',
     html: `<div style="position:relative;width:${size}px;height:${size}px;filter:${glow};transform:${scale};transform-origin:${anchor}px ${anchor}px">
@@ -293,8 +293,11 @@ function refreshMarkerActive() {
 function renderSitePerimeter(site) {
   if (perimeterLayer) { perimeterLayer.remove(); perimeterLayer = null; }
   if (!site.perimeter?.points?.length) return;
-  perimeterLayer = L.polygon(site.perimeter.points.map(p => [p.lat, p.lon]), {
-    color: '#e94560', weight: 2, dashArray: '6,5', fillOpacity: 0.04,
+  const pts = site.perimeter.points.map(p => [p.lat, p.lon]);
+  if (pts.length > 1) pts.push(pts[0]); // ferme visuellement le tracé
+  perimeterLayer = L.polyline(pts, {
+    color: '#e94560', weight: 2, dashArray: '6,5',
+    interactive: false, // pas de hover, pas de clic
   }).addTo(map);
 }
 
@@ -545,7 +548,7 @@ function renderPlanMarkers() {
     }
 
     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    circle.setAttribute('r', isActive ? 7 : 5.5);
+    circle.setAttribute('r', 6);
     circle.setAttribute('fill', color);
     circle.setAttribute('stroke', 'white');
     circle.setAttribute('stroke-width', isActive ? 3 : 1.5);
@@ -555,8 +558,7 @@ function renderPlanMarkers() {
 
     if (point.photos.length > 1) {
       const br = 6;
-      const r = isActive ? 7 : 5.5;
-      const bx = r + br - 1, by = -(r + br - 1);
+      const bx = 11, by = -11;
       const badgeBg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       badgeBg.setAttribute('cx', bx); badgeBg.setAttribute('cy', by);
       badgeBg.setAttribute('r', br);

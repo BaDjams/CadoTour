@@ -266,7 +266,7 @@ function initMap() {
 
   const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors',
-    maxZoom: 19,
+    maxZoom: 22,
   });
 
   const googleHybridLayer = L.tileLayer(
@@ -274,7 +274,7 @@ function initMap() {
     {
       subdomains: ['0','1','2','3'],
       attribution: '© Google',
-      maxZoom: 20,
+      maxZoom: 22,
     }
   );
 
@@ -1325,7 +1325,7 @@ function makePointIcon(type, bearing, isActive, count = 1) {
   const glow  = isActive
     ? `drop-shadow(0 0 8px ${color}) drop-shadow(0 0 14px rgba(255,255,255,0.95))`
     : 'drop-shadow(0 1px 4px rgba(0,0,0,0.6))';
-  const scale = isActive ? 'scale(1.12)' : '';
+  const scale = isActive ? 'scale(1.15)' : '';
   const badge = count > 1 ? `<span class="photo-count-badge">${count}</span>` : '';
   const html = `<div style="position:relative;width:${size}px;height:${size}px;filter:${glow};transform:${scale};transform-origin:${anchor}px ${anchor}px">
     <div style="width:${size}px;height:${size}px;transform:rotate(${rot}deg);transform-origin:${anchor}px ${anchor}px">
@@ -1911,9 +1911,9 @@ function renderPlanMarkers() {
     } else {
       const wedge = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       if (point.type === 'normal') {
-        wedge.setAttribute('d', 'M0,0 L-6,-14.4 A15.6,15.6,0,0,1,6,-14.4 Z');
+        wedge.setAttribute('d', 'M0,0 L-6,-14.4 A21.6,21.6,0,0,1,6,-14.4 Z');
       } else { // panoramic | drone
-        wedge.setAttribute('d', 'M0,0 L-13.2,-7.8 A15.6,15.6,0,0,1,13.2,-7.8 Z');
+        wedge.setAttribute('d', 'M0,0 L-13.2,-7.8 A21.6,21.6,0,0,1,13.2,-7.8 Z');
       }
       wedge.setAttribute('fill', color);
       wedge.setAttribute('opacity', '0.6');
@@ -1922,7 +1922,7 @@ function renderPlanMarkers() {
     }
 
     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    circle.setAttribute('r', isActive ? 7 : 5.5);
+    circle.setAttribute('r', 6);
     circle.setAttribute('fill', color);
     circle.setAttribute('stroke', 'white');
     circle.setAttribute('stroke-width', isActive ? 3 : 1.5);
@@ -1932,8 +1932,7 @@ function renderPlanMarkers() {
 
     if (point.photos.length > 1) {
       const br = 6;
-      const r = isActive ? 7 : 5.5;
-      const bx = r + br - 1, by = -(r + br - 1);
+      const bx = 11, by = -11;
       const badgeBg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       badgeBg.setAttribute('cx', bx); badgeBg.setAttribute('cy', by);
       badgeBg.setAttribute('r', br);
