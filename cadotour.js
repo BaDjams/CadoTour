@@ -9,6 +9,7 @@ import {
 } from './shared.js';
 import * as imageStore from './imageStore.js';
 import { renderIcon } from './icons.js';
+import * as progress from './progress.js';
 
 // ===== STATE =====
 const state = {
@@ -99,7 +100,20 @@ function initMap() {
 }
 
 // ===== SITE LOADING =====
-async function _migrateLoadedSite(data) {
+function countSiteImages(site) {
+  let n = 0;
+  if (site.illustrationId || (typeof site.illustration === 'string' && site.illustration.startsWith('data:'))) n++;
+  for (const sp of site.sitePlans || []) if (sp.imageId || sp.imageDataURL) n++;
+  for (const bld of site.buildings || []) {
+    for (const fl of bld.floors || []) if (fl.imageId || fl.imageDataURL) n++;
+  }
+  for (const pt of site.points || []) {
+    for (const ph of pt.photos || []) if (ph.imageId || ph.dataURL) n++;
+  }
+  return n;
+}
+
+async function _migrateLoadedSite(data, onProgress = () => {}) {
   data.address      = data.address      || '';
   data.contacts     = data.contacts     || [];
   data.icon         = data.icon         || 'landmark';
@@ -109,15 +123,20 @@ async function _migrateLoadedSite(data) {
   data.perimeter    = data.perimeter    || null;
   data.accessArrow  = data.accessArrow  || null;
 
+  let done = 0;
+  const tick = () => { done++; onProgress(done); };
+
   if (typeof data.illustration === 'string' && data.illustration.startsWith('data:')) {
     data.illustrationId = await imageStore.migrateDataURL(data.illustration);
     delete data.illustration;
+    tick();
   }
 
   for (const sp of data.sitePlans) {
     if (sp.imageDataURL) {
       sp.imageId = await imageStore.migrateDataURL(sp.imageDataURL);
       delete sp.imageDataURL;
+      tick();
     }
   }
 
@@ -127,6 +146,7 @@ async function _migrateLoadedSite(data) {
       if (fl.imageDataURL) {
         fl.imageId = await imageStore.migrateDataURL(fl.imageDataURL);
         delete fl.imageDataURL;
+        tick();
       }
     }
   }
@@ -138,6 +158,7 @@ async function _migrateLoadedSite(data) {
       if (ph.dataURL) {
         ph.imageId = await imageStore.migrateDataURL(ph.dataURL);
         delete ph.dataURL;
+        tick();
       }
       delete ph.thumbnail;
     }
@@ -153,7 +174,13 @@ function loadSiteFromFile(file) {
         alert('Fichier .cado au format obsolète. Recréez-le avec la nouvelle version de CadoCreator.');
         return;
       }
-      await _migrateLoadedSite(data);
+      const total = countSiteImages(data);
+      progress.show(`Chargement de « ${data.name || 'le site'} »…`, total);
+      try {
+        await _migrateLoadedSite(data, cur => progress.update(cur));
+      } finally {
+        progress.hide();
+      }
 
       if (state.sites.find(s => s.id === data.id)) {
         if (siteMarkers[data.id]) { siteMarkers[data.id].remove(); delete siteMarkers[data.id]; }
@@ -230,12 +257,13 @@ function makePointIcon(type, bearing, isActive, count = 1) {
                 <circle cx="-7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/>
                 <circle cx="7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/>
                 <rect x="-3" y="-3" width="6" height="6" rx="1" fill="${color}" stroke="white" stroke-width="${sw}"/>`;
-  } else {
+  } else { // 360
     size = 52; anchor = 26; color = '#2980b9';
-    svgInner = `<path d="M 0,-18 A 18,18 0 1 1 -6.16,-16.91" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round"/>
-                <polygon points="-1.00,-18.79 -4.62,-12.68 -7.70,-21.14" fill="${color}"/>
-                <circle r="6" fill="${color}" stroke="white" stroke-width="${sw}"/>`;
+    svgInner = `<polygon points="0,-19 5,-9 0,-11 -5,-9" fill="${color}" stroke="white" stroke-width="1.5" stroke-linejoin="round" transform="rotate(${rot})"/>
+                <circle r="10" fill="${color}" stroke="white" stroke-width="${sw}"/>
+                <text x="0" y="0.5" text-anchor="middle" dominant-baseline="central" font-size="9" font-weight="700" fill="white">360</text>`;
   }
+  // Le 360 rotate sa kite localement ; les autres font tourner toute l'icône.
   const rotateSvg = type !== '360' ? `style="transform:rotate(${rot}deg)"` : '';
   const badge = count > 1 ? `<span class="photo-count-badge">${count}</span>` : '';
   const glow  = isActive
@@ -522,21 +550,14 @@ function renderPlanMarkers() {
 
     const rot = point.bearing || 0;
     if (point.type === '360') {
-      const arc = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      arc.setAttribute('d', 'M 0,-11 A 11,11 0 1 1 -3.76,-10.34');
-      arc.setAttribute('fill', 'none');
-      arc.setAttribute('stroke', color);
-      arc.setAttribute('stroke-width', '2.2');
-      arc.setAttribute('stroke-linecap', 'round');
-      arc.setAttribute('opacity', '0.85');
-      arc.setAttribute('transform', `rotate(${rot})`);
-      g.appendChild(arc);
-      const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-      arrow.setAttribute('points', '-0.47,-11.54 -2.73,-7.52 -4.79,-13.16');
-      arrow.setAttribute('fill', color);
-      arrow.setAttribute('opacity', '0.85');
-      arrow.setAttribute('transform', `rotate(${rot})`);
-      g.appendChild(arrow);
+      const tri = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      tri.setAttribute('points', '0,-19 5,-9 0,-11 -5,-9');
+      tri.setAttribute('fill', color);
+      tri.setAttribute('stroke', 'white');
+      tri.setAttribute('stroke-width', '1.5');
+      tri.setAttribute('stroke-linejoin', 'round');
+      tri.setAttribute('transform', `rotate(${rot})`);
+      g.appendChild(tri);
     } else {
       const wedge = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       if (point.type === 'normal') wedge.setAttribute('d', 'M0,0 L-6,-14.4 A15.6,15.6,0,0,1,6,-14.4 Z');
@@ -547,18 +568,32 @@ function renderPlanMarkers() {
       g.appendChild(wedge);
     }
 
+    const bodyR = point.type === '360' ? 10 : 6;
     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    circle.setAttribute('r', 6);
+    circle.setAttribute('r', bodyR);
     circle.setAttribute('fill', color);
     circle.setAttribute('stroke', 'white');
     circle.setAttribute('stroke-width', isActive ? 3 : 1.5);
     circle.setAttribute('class', 'plan-pin-circle');
-
     g.appendChild(circle);
+
+    if (point.type === '360') {
+      const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      txt.setAttribute('x', '0');
+      txt.setAttribute('y', '0.5');
+      txt.setAttribute('text-anchor', 'middle');
+      txt.setAttribute('dominant-baseline', 'central');
+      txt.setAttribute('font-size', '9');
+      txt.setAttribute('font-weight', '700');
+      txt.setAttribute('fill', 'white');
+      txt.style.pointerEvents = 'none';
+      txt.textContent = '360';
+      g.appendChild(txt);
+    }
 
     if (point.photos.length > 1) {
       const br = 6;
-      const bx = 11, by = -11;
+      const bx = bodyR + br - 1, by = -(bodyR + br - 1);
       const badgeBg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       badgeBg.setAttribute('cx', bx); badgeBg.setAttribute('cy', by);
       badgeBg.setAttribute('r', br);

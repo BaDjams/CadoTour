@@ -10,6 +10,7 @@ import {
 } from './shared.js';
 import { SITE_ICONS, BUILDING_ICONS, renderIcon } from './icons.js';
 import * as imageStore from './imageStore.js';
+import * as progress from './progress.js';
 
 // ===== CACHE (IndexedDB — pas de limite de taille) =====
 const DB_STORE = imageStore.STORE_STATE_NAME;
@@ -70,7 +71,20 @@ async function checkCacheRestore() {
   } catch (e) { console.warn('Cache restore failed:', e); }
 }
 
-async function normalizeSite(data) {
+function countSiteImages(site) {
+  let n = 0;
+  if (site.illustrationId || (typeof site.illustration === 'string' && site.illustration.startsWith('data:'))) n++;
+  for (const sp of site.sitePlans || []) if (sp.imageId || sp.imageDataURL) n++;
+  for (const bld of site.buildings || []) {
+    for (const fl of bld.floors || []) if (fl.imageId || fl.imageDataURL) n++;
+  }
+  for (const pt of site.points || []) {
+    for (const ph of pt.photos || []) if (ph.imageId || ph.dataURL) n++;
+  }
+  return n;
+}
+
+async function normalizeSite(data, onProgress = () => {}) {
   data.address      = data.address      || '';
   data.contacts     = data.contacts     || [];
   data.icon         = data.icon         || 'landmark';
@@ -82,10 +96,14 @@ async function normalizeSite(data) {
   delete data.photos; // ancien champ — modèle obsolète
   delete data.floors; // ancien champ — modèle obsolète
 
+  let done = 0;
+  const tick = () => { done++; onProgress(done); };
+
   // Migration : illustration en dataURL → Blob + illustrationId
   if (typeof data.illustration === 'string' && data.illustration.startsWith('data:')) {
     data.illustrationId = await imageStore.migrateDataURL(data.illustration);
     delete data.illustration;
+    tick();
   } else if (data.illustration && typeof data.illustration === 'object') {
     // garde-fou : ancien format objet → drop
     delete data.illustration;
@@ -98,6 +116,7 @@ async function normalizeSite(data) {
       if (floor.imageDataURL) {
         floor.imageId = await imageStore.migrateDataURL(floor.imageDataURL);
         delete floor.imageDataURL;
+        tick();
       }
     }
   }
@@ -107,6 +126,7 @@ async function normalizeSite(data) {
     if (sp.imageDataURL) {
       sp.imageId = await imageStore.migrateDataURL(sp.imageDataURL);
       delete sp.imageDataURL;
+      tick();
     }
   }
 
@@ -118,6 +138,7 @@ async function normalizeSite(data) {
       if (ph.dataURL) {
         ph.imageId = await imageStore.migrateDataURL(ph.dataURL);
         delete ph.dataURL;
+        tick();
       }
       delete ph.thumbnail;
     }
@@ -898,7 +919,14 @@ function loadSiteFromFile(file) {
         alert('Fichier .cado au format obsolète (avant le passage au modèle "points").\nCe fichier ne peut pas être ouvert avec cette version.');
         return;
       }
-      await normalizeSite(data);
+
+      const total = countSiteImages(data);
+      progress.show(`Chargement de « ${data.name || 'le site'} »…`, total);
+      try {
+        await normalizeSite(data, cur => progress.update(cur));
+      } finally {
+        progress.hide();
+      }
 
       if (state.sites.find(s => s.id === data.id)) {
         if (!confirm(`Un site "${data.name}" est déjà chargé. Remplacer ?`)) return;
@@ -914,6 +942,7 @@ function loadSiteFromFile(file) {
       selectSite(data.id);
       updateTopBarButtons();
     } catch (err) {
+      progress.hide();
       alert('Fichier JSON invalide : ' + err.message);
     }
   };
@@ -922,13 +951,16 @@ function loadSiteFromFile(file) {
 
 // Construit une copie sérialisable du site avec les images réinjectées en dataURL.
 // Format .cado rétro-compatible avec les versions antérieures (avant le passage aux Blobs).
-async function buildExportableSite(site) {
+async function buildExportableSite(site, onProgress = () => {}) {
   const out = JSON.parse(JSON.stringify(site));
+  let done = 0;
+  const tick = () => { done++; onProgress(done); };
 
   if (out.illustrationId) {
     const blob = await imageStore.getBlob(out.illustrationId);
     if (blob) out.illustration = await imageStore.blobToDataURL(blob);
     delete out.illustrationId;
+    tick();
   }
 
   for (const sp of out.sitePlans || []) {
@@ -936,6 +968,7 @@ async function buildExportableSite(site) {
       const blob = await imageStore.getBlob(sp.imageId);
       if (blob) sp.imageDataURL = await imageStore.blobToDataURL(blob);
       delete sp.imageId;
+      tick();
     }
   }
 
@@ -945,6 +978,7 @@ async function buildExportableSite(site) {
         const blob = await imageStore.getBlob(fl.imageId);
         if (blob) fl.imageDataURL = await imageStore.blobToDataURL(blob);
         delete fl.imageId;
+        tick();
       }
     }
   }
@@ -955,6 +989,7 @@ async function buildExportableSite(site) {
         const blob = await imageStore.getBlob(ph.imageId);
         if (blob) ph.dataURL = await imageStore.blobToDataURL(blob);
         delete ph.imageId;
+        tick();
       }
     }
   }
@@ -962,8 +997,8 @@ async function buildExportableSite(site) {
   return out;
 }
 
-async function downloadSite(site) {
-  const exportable = await buildExportableSite(site);
+async function downloadSite(site, onProgress) {
+  const exportable = await buildExportableSite(site, onProgress);
   const json = JSON.stringify(exportable, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
@@ -977,7 +1012,13 @@ async function downloadSite(site) {
 async function saveSite() {
   const site = getActiveSite();
   if (!site) return;
-  await downloadSite(site);
+  const total = countSiteImages(site);
+  progress.show(`Sauvegarde de « ${site.name || 'le site'} »…`, total);
+  try {
+    await downloadSite(site, cur => progress.update(cur));
+  } finally {
+    progress.hide();
+  }
   clearCacheState();
 }
 
@@ -994,7 +1035,12 @@ async function _doCloseSite(withSave) {
   const site = getActiveSite();
   if (!site) return;
 
-  if (withSave) await downloadSite(site);
+  if (withSave) {
+    const total = countSiteImages(site);
+    progress.show(`Sauvegarde de « ${site.name || 'le site'} »…`, total);
+    try { await downloadSite(site, cur => progress.update(cur)); }
+    finally { progress.hide(); }
+  }
 
   // Libère tous les Blobs du site (illustration, plans, photos)
   if (site.illustrationId) imageStore.deleteImage(site.illustrationId);
@@ -1314,12 +1360,12 @@ function makePointIcon(type, bearing, isActive, count = 1) {
       <circle cx="-7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/>
       <circle cx="7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/>
       <rect x="-3" y="-3" width="6" height="6" rx="1" fill="${color}" stroke="white" stroke-width="${sw}"/>`;
-  } else {
+  } else { // 360
     size = 52; anchor = 26; color = '#2980b9';
     svgInner = `
-      <path d="M 0,-18 A 18,18 0 1 1 -6.16,-16.91" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round"/>
-      <polygon points="-1.00,-18.79 -4.62,-12.68 -7.70,-21.14" fill="${color}"/>
-      <circle r="6" fill="${color}" stroke="white" stroke-width="${sw}"/>`;
+      <polygon points="0,-19 5,-9 0,-11 -5,-9" fill="${color}" stroke="white" stroke-width="1.5" stroke-linejoin="round" transform="rotate(${rot})"/>
+      <circle r="10" fill="${color}" stroke="white" stroke-width="${sw}"/>
+      <text x="0" y="0.5" text-anchor="middle" dominant-baseline="central" font-size="9" font-weight="700" fill="white">360</text>`;
   }
 
   const glow  = isActive
@@ -1327,8 +1373,10 @@ function makePointIcon(type, bearing, isActive, count = 1) {
     : 'drop-shadow(0 1px 4px rgba(0,0,0,0.6))';
   const scale = isActive ? 'scale(1.15)' : '';
   const badge = count > 1 ? `<span class="photo-count-badge">${count}</span>` : '';
+  // Le 360 n'a pas de cône orienté : on rotate localement la kite, pas tout le wrapper.
+  const wrapperRot = type === '360' ? 0 : rot;
   const html = `<div style="position:relative;width:${size}px;height:${size}px;filter:${glow};transform:${scale};transform-origin:${anchor}px ${anchor}px">
-    <div style="width:${size}px;height:${size}px;transform:rotate(${rot}deg);transform-origin:${anchor}px ${anchor}px">
+    <div style="width:${size}px;height:${size}px;transform:rotate(${wrapperRot}deg);transform-origin:${anchor}px ${anchor}px">
       <svg width="${size}" height="${size}" viewBox="-${anchor} -${anchor} ${size} ${size}" style="overflow:visible">${svgInner}</svg>
     </div>
     ${badge}
@@ -1893,27 +1941,20 @@ function renderPlanMarkers() {
 
     const rot = point.bearing || 0;
     if (point.type === '360') {
-      const arc = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      arc.setAttribute('d', 'M 0,-11 A 11,11 0 1 1 -3.76,-10.34');
-      arc.setAttribute('fill', 'none');
-      arc.setAttribute('stroke', color);
-      arc.setAttribute('stroke-width', '2.2');
-      arc.setAttribute('stroke-linecap', 'round');
-      arc.setAttribute('opacity', '0.85');
-      arc.setAttribute('transform', `rotate(${rot})`);
-      g.appendChild(arc);
-      const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-      arrow.setAttribute('points', '-0.47,-11.54 -2.73,-7.52 -4.79,-13.16');
-      arrow.setAttribute('fill', color);
-      arrow.setAttribute('opacity', '0.85');
-      arrow.setAttribute('transform', `rotate(${rot})`);
-      g.appendChild(arrow);
+      const tri = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      tri.setAttribute('points', '0,-19 5,-9 0,-11 -5,-9');
+      tri.setAttribute('fill', color);
+      tri.setAttribute('stroke', 'white');
+      tri.setAttribute('stroke-width', '1.5');
+      tri.setAttribute('stroke-linejoin', 'round');
+      tri.setAttribute('transform', `rotate(${rot})`);
+      g.appendChild(tri);
     } else {
       const wedge = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       if (point.type === 'normal') {
-        wedge.setAttribute('d', 'M0,0 L-6,-14.4 A21.6,21.6,0,0,1,6,-14.4 Z');
+        wedge.setAttribute('d', 'M0,0 L-6,-14.4 A15.6,15.6,0,0,1,6,-14.4 Z');
       } else { // panoramic | drone
-        wedge.setAttribute('d', 'M0,0 L-13.2,-7.8 A21.6,21.6,0,0,1,13.2,-7.8 Z');
+        wedge.setAttribute('d', 'M0,0 L-13.2,-7.8 A15.6,15.6,0,0,1,13.2,-7.8 Z');
       }
       wedge.setAttribute('fill', color);
       wedge.setAttribute('opacity', '0.6');
@@ -1921,18 +1962,32 @@ function renderPlanMarkers() {
       g.appendChild(wedge);
     }
 
+    const bodyR = point.type === '360' ? 10 : 6;
     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    circle.setAttribute('r', 6);
+    circle.setAttribute('r', bodyR);
     circle.setAttribute('fill', color);
     circle.setAttribute('stroke', 'white');
     circle.setAttribute('stroke-width', isActive ? 3 : 1.5);
     circle.setAttribute('class', 'plan-pin-circle');
-
     g.appendChild(circle);
+
+    if (point.type === '360') {
+      const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      txt.setAttribute('x', '0');
+      txt.setAttribute('y', '0.5');
+      txt.setAttribute('text-anchor', 'middle');
+      txt.setAttribute('dominant-baseline', 'central');
+      txt.setAttribute('font-size', '9');
+      txt.setAttribute('font-weight', '700');
+      txt.setAttribute('fill', 'white');
+      txt.style.pointerEvents = 'none';
+      txt.textContent = '360';
+      g.appendChild(txt);
+    }
 
     if (point.photos.length > 1) {
       const br = 6;
-      const bx = 11, by = -11;
+      const bx = bodyR + br - 1, by = -(bodyR + br - 1);
       const badgeBg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       badgeBg.setAttribute('cx', bx); badgeBg.setAttribute('cy', by);
       badgeBg.setAttribute('r', br);

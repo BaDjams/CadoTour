@@ -24,7 +24,8 @@
       "Bash(git fetch *)",
       "Bash(git stash *)",
       "Bash(git pull *)",
-      "Bash(node --check imageStore.js)"
+      "Bash(node --check imageStore.js)",
+      "Bash(node --check progress.js)"
     ]
   }
 }
