@@ -266,7 +266,7 @@ function initMap() {
 
   const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors',
-    maxZoom: 22,
+    maxZoom: 19,
   });
 
   const googleHybridLayer = L.tileLayer(
@@ -274,7 +274,7 @@ function initMap() {
     {
       subdomains: ['0','1','2','3'],
       attribution: '© Google',
-      maxZoom: 22,
+      maxZoom: 21,
     }
   );
 
@@ -1317,8 +1317,8 @@ function makePointIcon(type, bearing, isActive, count = 1) {
   } else {
     size = 52; anchor = 26; color = '#2980b9';
     svgInner = `
-      <path d="M 0,-18 A 18,18 0 1 1 -3.13,-17.73" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round"/>
-      <polygon points="1.80,-18.60 -2.61,-14.78 -3.65,-20.69" fill="${color}"/>
+      <path d="M 0,-18 A 18,18 0 1 1 -6.16,-16.91" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round"/>
+      <polygon points="-1.00,-18.79 -4.62,-12.68 -7.70,-21.14" fill="${color}"/>
       <circle r="6" fill="${color}" stroke="white" stroke-width="${sw}"/>`;
   }
 
@@ -1894,7 +1894,7 @@ function renderPlanMarkers() {
     const rot = point.bearing || 0;
     if (point.type === '360') {
       const arc = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      arc.setAttribute('d', 'M 0,-11 A 11,11 0 1 1 -1.91,-10.83');
+      arc.setAttribute('d', 'M 0,-11 A 11,11 0 1 1 -3.76,-10.34');
       arc.setAttribute('fill', 'none');
       arc.setAttribute('stroke', color);
       arc.setAttribute('stroke-width', '2.2');
@@ -1903,7 +1903,7 @@ function renderPlanMarkers() {
       arc.setAttribute('transform', `rotate(${rot})`);
       g.appendChild(arc);
       const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-      arrow.setAttribute('points', '1.04,-11.36 -1.56,-8.86 -2.26,-12.80');
+      arrow.setAttribute('points', '-0.47,-11.54 -2.73,-7.52 -4.79,-13.16');
       arrow.setAttribute('fill', color);
       arrow.setAttribute('opacity', '0.85');
       arrow.setAttribute('transform', `rotate(${rot})`);
