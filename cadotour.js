@@ -11,6 +11,7 @@ import * as imageStore from './imageStore.js';
 import { renderIcon } from './icons.js';
 import * as progress from './progress.js';
 import { initViewerSplitter, showResizer, hideResizer } from './splitter.js';
+import * as fflate from 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js';
 
 // ===== STATE =====
 const state = {
@@ -103,13 +104,13 @@ function initMap() {
 // ===== SITE LOADING =====
 function countSiteImages(site) {
   let n = 0;
-  if (site.illustrationId || (typeof site.illustration === 'string' && site.illustration.startsWith('data:'))) n++;
-  for (const sp of site.sitePlans || []) if (sp.imageId || sp.imageDataURL) n++;
+  if (site.illustrationId || site.illustrationFile || (typeof site.illustration === 'string' && site.illustration.startsWith('data:'))) n++;
+  for (const sp of site.sitePlans || []) if (sp.imageId || sp.imageFile || sp.imageDataURL) n++;
   for (const bld of site.buildings || []) {
-    for (const fl of bld.floors || []) if (fl.imageId || fl.imageDataURL) n++;
+    for (const fl of bld.floors || []) if (fl.imageId || fl.imageFile || fl.imageDataURL) n++;
   }
   for (const pt of site.points || []) {
-    for (const ph of pt.photos || []) if (ph.imageId || ph.dataURL) n++;
+    for (const ph of pt.photos || []) if (ph.imageId || ph.imageFile || ph.dataURL) n++;
   }
   return n;
 }
@@ -166,11 +167,17 @@ async function _migrateLoadedSite(data, onProgress = () => {}) {
   }
 }
 
-function loadSiteFromFile(file) {
-  const reader = new FileReader();
-  reader.onload = async e => {
-    try {
-      const data = JSON.parse(e.target.result);
+async function loadSiteFromFile(file) {
+  try {
+    const header = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+    const isZip  = header[0] === 0x50 && header[1] === 0x4B;
+    let data;
+    if (isZip) {
+      data = await _loadSiteFromZip(file);
+      if (!data) return;
+    } else {
+      const text = await file.text();
+      data = JSON.parse(text);
       if (!Array.isArray(data.points)) {
         alert('Fichier .cado au format obsolète. Recréez-le avec la nouvelle version de CadoCreator.');
         return;
@@ -182,21 +189,104 @@ function loadSiteFromFile(file) {
       } finally {
         progress.hide();
       }
-
-      if (state.sites.find(s => s.id === data.id)) {
-        if (siteMarkers[data.id]) { siteMarkers[data.id].remove(); delete siteMarkers[data.id]; }
-        state.sites = state.sites.filter(s => s.id !== data.id);
-      }
-      state.sites.push(data);
-      addSiteMarker(data);
-      if (data.perimeter)   renderSitePerimeter(data);
-      if (data.accessArrow) renderAccessArrow(data);
-      selectSite(data.id);
-    } catch (err) {
-      alert('Fichier invalide : ' + err.message);
     }
+
+    if (state.sites.find(s => s.id === data.id)) {
+      if (siteMarkers[data.id]) { siteMarkers[data.id].remove(); delete siteMarkers[data.id]; }
+      state.sites = state.sites.filter(s => s.id !== data.id);
+    }
+    state.sites.push(data);
+    addSiteMarker(data);
+    if (data.perimeter)   renderSitePerimeter(data);
+    if (data.accessArrow) renderAccessArrow(data);
+    selectSite(data.id);
+  } catch (err) {
+    alert('Fichier invalide : ' + err.message);
+  }
+}
+
+async function _loadSiteFromZip(file) {
+  let zipFiles;
+  try {
+    const uint8 = new Uint8Array(await file.arrayBuffer());
+    zipFiles = fflate.unzipSync(uint8);
+  } catch (e) {
+    throw new Error('Fichier .cado ZIP invalide : ' + e.message);
+  }
+  if (!zipFiles['metadata.json']) throw new Error('metadata.json manquant dans le fichier .cado');
+  const data = JSON.parse(new TextDecoder().decode(zipFiles['metadata.json']));
+  delete zipFiles['metadata.json'];
+  if (!Array.isArray(data.points)) {
+    alert('Fichier .cado au format obsolète. Recréez-le avec la nouvelle version de CadoCreator.');
+    return null;
+  }
+  const total = countSiteImages(data);
+  progress.show(`Chargement de « ${data.name || 'le site'} »…`, total);
+  try {
+    await _normalizeZipSite(data, zipFiles, cur => progress.update(cur));
+  } finally {
+    progress.hide();
+  }
+  return data;
+}
+
+async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
+  data.address     = data.address     || '';
+  data.contacts    = data.contacts    || [];
+  data.icon        = data.icon        || 'landmark';
+  data.buildings   = data.buildings   || [];
+  data.sitePlans   = data.sitePlans   || [];
+  data.points      = data.points      || [];
+  data.perimeter   = data.perimeter   || null;
+  data.accessArrow = data.accessArrow || null;
+
+  let done = 0;
+  const tick = () => { done++; onProgress(done); };
+
+  const storeFromZip = async (imageFile, imageMime) => {
+    const arr = zipFiles[`images/${imageFile}`];
+    if (!arr) return null;
+    const blob = new Blob([arr], { type: imageMime || 'application/octet-stream' });
+    delete zipFiles[`images/${imageFile}`];
+    return imageStore.putBlob(blob);
   };
-  reader.readAsText(file);
+
+  if (data.illustrationFile) {
+    data.illustrationId = await storeFromZip(data.illustrationFile, data.illustrationMime);
+    delete data.illustrationFile; delete data.illustrationMime;
+    tick();
+  }
+
+  for (const sp of data.sitePlans) {
+    if (sp.imageFile) {
+      sp.imageId = await storeFromZip(sp.imageFile, sp.imageMime);
+      delete sp.imageFile; delete sp.imageMime;
+      tick();
+    }
+  }
+
+  for (const bld of data.buildings) {
+    bld.floors = bld.floors || [];
+    for (const fl of bld.floors) {
+      if (fl.imageFile) {
+        fl.imageId = await storeFromZip(fl.imageFile, fl.imageMime);
+        delete fl.imageFile; delete fl.imageMime;
+        tick();
+      }
+    }
+  }
+
+  for (const pt of data.points) {
+    if (pt.bearing == null) pt.bearing = 0;
+    pt.photos = pt.photos || [];
+    for (const ph of pt.photos) {
+      if (ph.imageFile) {
+        ph.imageId = await storeFromZip(ph.imageFile, ph.imageMime);
+        delete ph.imageFile; delete ph.imageMime;
+        tick();
+      }
+    }
+  }
 }
 
 // ===== SITE MARKERS =====

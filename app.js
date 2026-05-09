@@ -12,6 +12,7 @@ import { SITE_ICONS, BUILDING_ICONS, renderIcon } from './icons.js';
 import * as imageStore from './imageStore.js';
 import * as progress from './progress.js';
 import { initViewerSplitter, showResizer, hideResizer } from './splitter.js';
+import * as fflate from 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js';
 
 // ===== CACHE (IndexedDB — pas de limite de taille) =====
 const DB_STORE = imageStore.STORE_STATE_NAME;
@@ -74,13 +75,13 @@ async function checkCacheRestore() {
 
 function countSiteImages(site) {
   let n = 0;
-  if (site.illustrationId || (typeof site.illustration === 'string' && site.illustration.startsWith('data:'))) n++;
-  for (const sp of site.sitePlans || []) if (sp.imageId || sp.imageDataURL) n++;
+  if (site.illustrationId || site.illustrationFile || (typeof site.illustration === 'string' && site.illustration.startsWith('data:'))) n++;
+  for (const sp of site.sitePlans || []) if (sp.imageId || sp.imageFile || sp.imageDataURL) n++;
   for (const bld of site.buildings || []) {
-    for (const fl of bld.floors || []) if (fl.imageId || fl.imageDataURL) n++;
+    for (const fl of bld.floors || []) if (fl.imageId || fl.imageFile || fl.imageDataURL) n++;
   }
   for (const pt of site.points || []) {
-    for (const ph of pt.photos || []) if (ph.imageId || ph.dataURL) n++;
+    for (const ph of pt.photos || []) if (ph.imageId || ph.imageFile || ph.dataURL) n++;
   }
   return n;
 }
@@ -911,16 +912,23 @@ function clearStepBanner() {
 }
 
 // ===== LOAD / SAVE =====
-function loadSiteFromFile(file) {
-  const reader = new FileReader();
-  reader.onload = async e => {
-    try {
-      const data = JSON.parse(e.target.result);
+async function loadSiteFromFile(file) {
+  try {
+    const header = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+    const isZip  = header[0] === 0x50 && header[1] === 0x4B;
+
+    let data;
+    if (isZip) {
+      data = await _loadSiteFromZip(file);
+      if (!data) return;
+    } else {
+      let text;
+      try { text = await file.text(); } catch (e) { throw new Error('Lecture impossible : ' + e.message); }
+      try { data = JSON.parse(text); } catch (e) { throw new Error('JSON invalide : ' + e.message); }
       if (!Array.isArray(data.points)) {
         alert('Fichier .cado au format obsolète (avant le passage au modèle "points").\nCe fichier ne peut pas être ouvert avec cette version.');
         return;
       }
-
       const total = countSiteImages(data);
       progress.show(`Chargement de « ${data.name || 'le site'} »…`, total);
       try {
@@ -928,208 +936,238 @@ function loadSiteFromFile(file) {
       } finally {
         progress.hide();
       }
-
-      if (state.sites.find(s => s.id === data.id)) {
-        if (!confirm(`Un site "${data.name}" est déjà chargé. Remplacer ?`)) return;
-        removeSiteMarker(data.id);
-        state.sites = state.sites.filter(s => s.id !== data.id);
-      }
-
-      state.sites.push(data);
-      addSiteMarker(data);
-      if (data.perimeter)   renderSitePerimeter(data);
-      if (data.accessArrow) renderAccessArrow(data);
-
-      selectSite(data.id);
-      updateTopBarButtons();
-    } catch (err) {
-      progress.hide();
-      alert('Fichier JSON invalide : ' + err.message);
     }
-  };
-  reader.readAsText(file);
+
+    if (state.sites.find(s => s.id === data.id)) {
+      if (!confirm(`Un site "${data.name}" est déjà chargé. Remplacer ?`)) return;
+      removeSiteMarker(data.id);
+      state.sites = state.sites.filter(s => s.id !== data.id);
+    }
+
+    state.sites.push(data);
+    addSiteMarker(data);
+    if (data.perimeter)   renderSitePerimeter(data);
+    if (data.accessArrow) renderAccessArrow(data);
+    selectSite(data.id);
+    updateTopBarButtons();
+  } catch (err) {
+    progress.hide();
+    alert('Erreur de chargement : ' + err.message);
+  }
 }
 
-// Construit une copie sérialisable du site avec les images réinjectées en dataURL.
-// Format .cado rétro-compatible avec les versions antérieures (avant le passage aux Blobs).
-async function buildExportableSite(site, onProgress = () => {}) {
-  const out = JSON.parse(JSON.stringify(site));
+async function _loadSiteFromZip(file) {
+  const uint8 = new Uint8Array(await file.arrayBuffer());
+  let zipFiles;
+  try { zipFiles = fflate.unzipSync(uint8); }
+  catch (e) { throw new Error('Fichier .cado ZIP invalide : ' + e.message); }
+
+  if (!zipFiles['metadata.json']) throw new Error('metadata.json manquant dans le fichier .cado');
+  const data = JSON.parse(new TextDecoder().decode(zipFiles['metadata.json']));
+  delete zipFiles['metadata.json'];
+
+  if (!Array.isArray(data.points)) {
+    alert('Fichier .cado ZIP au format obsolète.\nCe fichier ne peut pas être ouvert avec cette version.');
+    return null;
+  }
+
+  const total = countSiteImages(data);
+  progress.show(`Chargement de « ${data.name || 'le site'} »…`, total);
+  try {
+    await _normalizeZipSite(data, zipFiles, cur => progress.update(cur));
+  } finally {
+    progress.hide();
+  }
+  return data;
+}
+
+// Migre les références imageFile du format ZIP vers des Blobs IndexedDB (même rôle que normalizeSite).
+async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
+  data.address     = data.address     || '';
+  data.contacts    = data.contacts    || [];
+  data.icon        = data.icon        || 'landmark';
+  data.buildings   = data.buildings   || [];
+  data.sitePlans   = data.sitePlans   || [];
+  data.points      = data.points      || [];
+  data.perimeter   = data.perimeter   || null;
+  data.accessArrow = data.accessArrow || null;
+
   let done = 0;
   const tick = () => { done++; onProgress(done); };
 
-  if (out.illustrationId) {
-    const blob = await imageStore.getBlob(out.illustrationId);
-    if (blob) out.illustration = await imageStore.blobToDataURL(blob);
-    delete out.illustrationId;
+  const storeFromZip = async (imageFile, imageMime) => {
+    if (!imageFile) return null;
+    const arr = zipFiles[`images/${imageFile}`];
+    if (!arr) return null;
+    const blob = new Blob([arr], { type: imageMime || 'application/octet-stream' });
+    delete zipFiles[`images/${imageFile}`]; // libère le Uint8Array après création du Blob
+    return imageStore.putBlob(blob);
+  };
+
+  if (data.illustrationFile) {
+    data.illustrationId = await storeFromZip(data.illustrationFile, data.illustrationMime);
+    delete data.illustrationFile; delete data.illustrationMime; tick();
+  }
+  for (const sp of data.sitePlans) {
+    if (sp.imageFile) { sp.imageId = await storeFromZip(sp.imageFile, sp.imageMime); delete sp.imageFile; delete sp.imageMime; tick(); }
+  }
+  for (const bld of data.buildings) {
+    bld.floors = bld.floors || [];
+    for (const fl of bld.floors) {
+      if (fl.imageFile) { fl.imageId = await storeFromZip(fl.imageFile, fl.imageMime); delete fl.imageFile; delete fl.imageMime; tick(); }
+    }
+  }
+  for (const pt of data.points) {
+    if (pt.bearing == null) pt.bearing = 0;
+    pt.photos = pt.photos || [];
+    for (const ph of pt.photos) {
+      if (ph.imageFile) { ph.imageId = await storeFromZip(ph.imageFile, ph.imageMime); delete ph.imageFile; delete ph.imageMime; tick(); }
+      delete ph.thumbnail;
+    }
+  }
+}
+
+// ===== ZIP EXPORT HELPERS =====
+
+const _MIME_EXT = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'image/bmp': 'bmp' };
+function _mimeToExt(mime) { return _MIME_EXT[mime] || null; }
+
+// Collecte toutes les références d'images du site → Map<imageId, {filename, mime, blob}>.
+// getBlob() renvoie un Blob sans charger les octets dans le heap V8 (juste un handle natif).
+async function _collectImageMap(site) {
+  const map = new Map();
+  const register = async id => {
+    if (!id || map.has(id)) return;
+    const blob = await imageStore.getBlob(id);
+    if (!blob) return;
+    const mime = blob.type || 'application/octet-stream';
+    const ext  = _mimeToExt(mime);
+    map.set(id, { filename: id + (ext ? '.' + ext : ''), mime, blob });
+  };
+  if (site.illustrationId) await register(site.illustrationId);
+  for (const sp of site.sitePlans || []) if (sp.imageId) await register(sp.imageId);
+  for (const bld of site.buildings || []) for (const fl of bld.floors || []) if (fl.imageId) await register(fl.imageId);
+  for (const pt of site.points || []) for (const ph of pt.photos || []) if (ph.imageId) await register(ph.imageId);
+  return map;
+}
+
+// Construit le metadata.json : même structure que le site mais imageId → {imageFile, imageMime}.
+function _buildMetaFromSite(site, imageMap) {
+  const SITE_SKIP = new Set(['illustrationId', 'illustration', 'sitePlans', 'buildings', 'points']);
+  const meta = {};
+  for (const [k, v] of Object.entries(site)) { if (!SITE_SKIP.has(k) && v !== undefined) meta[k] = v; }
+
+  if (site.illustrationId && imageMap.has(site.illustrationId)) {
+    const { filename, mime } = imageMap.get(site.illustrationId);
+    meta.illustrationFile = filename; meta.illustrationMime = mime;
+  }
+  meta.sitePlans = (site.sitePlans || []).map(sp => {
+    const out = {};
+    for (const [k, v] of Object.entries(sp)) { if (k !== 'imageId' && v !== undefined) out[k] = v; }
+    if (sp.imageId && imageMap.has(sp.imageId)) { const { filename, mime } = imageMap.get(sp.imageId); out.imageFile = filename; out.imageMime = mime; }
+    return out;
+  });
+  meta.buildings = (site.buildings || []).map(bld => {
+    const out = {};
+    for (const [k, v] of Object.entries(bld)) { if (k !== 'floors' && v !== undefined) out[k] = v; }
+    out.floors = (bld.floors || []).map(fl => {
+      const fOut = {};
+      for (const [k, v] of Object.entries(fl)) { if (k !== 'imageId' && v !== undefined) fOut[k] = v; }
+      if (fl.imageId && imageMap.has(fl.imageId)) { const { filename, mime } = imageMap.get(fl.imageId); fOut.imageFile = filename; fOut.imageMime = mime; }
+      return fOut;
+    });
+    return out;
+  });
+  meta.points = (site.points || []).map(pt => {
+    const out = {};
+    for (const [k, v] of Object.entries(pt)) { if (k !== 'photos' && v !== undefined) out[k] = v; }
+    out.photos = (pt.photos || []).map(ph => {
+      const pOut = {};
+      for (const [k, v] of Object.entries(ph)) { if (k !== 'imageId' && v !== undefined) pOut[k] = v; }
+      if (ph.imageId && imageMap.has(ph.imageId)) { const { filename, mime } = imageMap.get(ph.imageId); pOut.imageFile = filename; pOut.imageMime = mime; }
+      return pOut;
+    });
+    return out;
+  });
+  return meta;
+}
+
+// Streaming ZIP → FileSystemWritableFileStream (FSAA).
+// Pic mémoire : ~une image à la fois (blob.arrayBuffer() charge ~2 Mo, puis libéré).
+async function _saveSiteAsZip(site, writable, onProgress) {
+  const enc = new TextEncoder();
+  let done = 0;
+  const tick = () => { done++; onProgress(done); };
+
+  const imageMap = await _collectImageMap(site);
+  const meta     = _buildMetaFromSite(site, imageMap);
+
+  let pendingWrite = Promise.resolve();
+  const zip = new fflate.Zip((err, chunk) => {
+    if (err) return;
+    pendingWrite = pendingWrite.then(() => writable.write(chunk));
+  });
+
+  const metaEntry = new fflate.ZipPassThrough('metadata.json');
+  zip.add(metaEntry);
+  metaEntry.push(enc.encode(JSON.stringify(meta)), true);
+  await pendingWrite;
+
+  for (const [, { filename, blob }] of imageMap) {
+    const arr = new Uint8Array(await blob.arrayBuffer()); // charge UNE image en heap
+    const entry = new fflate.ZipPassThrough(`images/${filename}`);
+    zip.add(entry);
+    entry.push(arr, true);
+    await pendingWrite; // flush vers disque avant l'image suivante
     tick();
   }
 
-  for (const sp of out.sitePlans || []) {
-    if (sp.imageId) {
-      const blob = await imageStore.getBlob(sp.imageId);
-      if (blob) sp.imageDataURL = await imageStore.blobToDataURL(blob);
-      delete sp.imageId;
-      tick();
-    }
-  }
-
-  for (const bld of out.buildings || []) {
-    for (const fl of bld.floors || []) {
-      if (fl.imageId) {
-        const blob = await imageStore.getBlob(fl.imageId);
-        if (blob) fl.imageDataURL = await imageStore.blobToDataURL(blob);
-        delete fl.imageId;
-        tick();
-      }
-    }
-  }
-
-  for (const pt of out.points || []) {
-    for (const ph of pt.photos || []) {
-      if (ph.imageId) {
-        const blob = await imageStore.getBlob(ph.imageId);
-        if (blob) ph.dataURL = await imageStore.blobToDataURL(blob);
-        delete ph.imageId;
-        tick();
-      }
-    }
-  }
-
-  return out;
+  zip.end();
+  await pendingWrite;
 }
 
-// Streams the site as compact JSON directly to a FileSystemWritableFileStream.
-// Processes one image at a time — peak heap: ~one photo (~3–5 MB), not all photos at once.
-// This sidesteps the OOM that occurs when JSON.stringify serialises a 700 MB object.
-async function _streamSiteJSON(site, writable, onProgress) {
+// Chemin legacy (Safari / navigateurs sans FSAA) : ZIP en mémoire + a.download.
+// Pic mémoire : ~500 Mo (ZIP complet) — mieux que ~1,4 Go du JSON+base64 précédent.
+async function _saveSiteAsZipLegacy(site, fname, onProgress) {
   const enc = new TextEncoder();
-  const buf = [];
-  const w   = s => buf.push(s);
-  const flush = async () => {
-    if (!buf.length) return;
-    await writable.write(enc.encode(buf.join('')));
-    buf.length = 0;
-  };
   let done = 0;
-  // flush after each image so the base64 string is released from the JS heap immediately
-  const tick = async () => { done++; onProgress(done); await flush(); };
+  const tick = () => { done++; onProgress(done); };
 
-  const imgOf = async id => {
-    if (!id) return null;
-    const blob = await imageStore.getBlob(id);
-    return blob ? await imageStore.blobToDataURL(blob) : null;
-  };
+  const imageMap = await _collectImageMap(site);
+  const meta     = _buildMetaFromSite(site, imageMap);
 
-  w('{');
+  const chunks = [];
+  const zip = new fflate.Zip((err, chunk) => { if (!err) chunks.push(chunk); });
 
-  // Site-level scalar fields (skip image/children keys — handled separately below)
-  const SITE_SKIP = new Set(['illustrationId', 'illustration', 'sitePlans', 'buildings', 'points']);
-  let siteC = false;
-  for (const [k, v] of Object.entries(site)) {
-    if (SITE_SKIP.has(k) || v === undefined) continue;
-    if (siteC) w(',');
-    w(JSON.stringify(k) + ':' + JSON.stringify(v));
-    siteC = true;
+  const metaEntry = new fflate.ZipPassThrough('metadata.json');
+  zip.add(metaEntry);
+  metaEntry.push(enc.encode(JSON.stringify(meta)), true);
+
+  for (const [, { filename, blob }] of imageMap) {
+    const arr = new Uint8Array(await blob.arrayBuffer());
+    const entry = new fflate.ZipPassThrough(`images/${filename}`);
+    zip.add(entry); entry.push(arr, true);
+    tick();
   }
 
-  // illustration
-  if (site.illustrationId) {
-    const d = await imgOf(site.illustrationId);
-    if (d) { if (siteC) w(','); w('"illustration":' + JSON.stringify(d)); siteC = true; }
-    await tick();
-  }
+  zip.end();
+  progress.setLabel('Génération du fichier…');
+  const totalLen = chunks.reduce((n, c) => n + c.length, 0);
+  const result = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
 
-  // sitePlans
-  if (siteC) w(',');
-  w('"sitePlans":[');
-  for (let i = 0; i < (site.sitePlans || []).length; i++) {
-    const sp = site.sitePlans[i];
-    if (i > 0) w(',');
-    w('{');
-    let spC = false;
-    for (const [k, v] of Object.entries(sp)) {
-      if (k === 'imageId' || v === undefined) continue;
-      if (spC) w(','); w(JSON.stringify(k) + ':' + JSON.stringify(v)); spC = true;
-    }
-    if (sp.imageId) {
-      const d = await imgOf(sp.imageId);
-      if (d) { if (spC) w(','); w('"imageDataURL":' + JSON.stringify(d)); }
-      await tick();
-    }
-    w('}');
-  }
-  w(']');
-
-  // buildings
-  w(',"buildings":[');
-  for (let bi = 0; bi < (site.buildings || []).length; bi++) {
-    const bld = site.buildings[bi];
-    if (bi > 0) w(',');
-    w('{');
-    let bC = false;
-    for (const [k, v] of Object.entries(bld)) {
-      if (k === 'floors' || v === undefined) continue;
-      if (bC) w(','); w(JSON.stringify(k) + ':' + JSON.stringify(v)); bC = true;
-    }
-    w(',"floors":[');
-    for (let fi = 0; fi < (bld.floors || []).length; fi++) {
-      const fl = bld.floors[fi];
-      if (fi > 0) w(',');
-      w('{');
-      let fC = false;
-      for (const [k, v] of Object.entries(fl)) {
-        if (k === 'imageId' || v === undefined) continue;
-        if (fC) w(','); w(JSON.stringify(k) + ':' + JSON.stringify(v)); fC = true;
-      }
-      if (fl.imageId) {
-        const d = await imgOf(fl.imageId);
-        if (d) { if (fC) w(','); w('"imageDataURL":' + JSON.stringify(d)); }
-        await tick();
-      }
-      w('}');
-    }
-    w(']}');
-  }
-  w(']');
-
-  // points
-  w(',"points":[');
-  for (let pi = 0; pi < (site.points || []).length; pi++) {
-    const pt = site.points[pi];
-    if (pi > 0) w(',');
-    w('{');
-    let ptC = false;
-    for (const [k, v] of Object.entries(pt)) {
-      if (k === 'photos' || v === undefined) continue;
-      if (ptC) w(','); w(JSON.stringify(k) + ':' + JSON.stringify(v)); ptC = true;
-    }
-    w(',"photos":[');
-    for (let phi = 0; phi < (pt.photos || []).length; phi++) {
-      const ph = pt.photos[phi];
-      if (phi > 0) w(',');
-      w('{');
-      let phC = false;
-      for (const [k, v] of Object.entries(ph)) {
-        if (k === 'imageId' || v === undefined) continue;
-        if (phC) w(','); w(JSON.stringify(k) + ':' + JSON.stringify(v)); phC = true;
-      }
-      if (ph.imageId) {
-        const d = await imgOf(ph.imageId);
-        if (d) { if (phC) w(','); w('"dataURL":' + JSON.stringify(d)); }
-        await tick();
-      }
-      w('}');
-    }
-    w(']}');
-  }
-  w(']}');
-
-  await flush();
+  const dlBlob = new Blob([result], { type: 'application/zip' });
+  const url = URL.createObjectURL(dlBlob);
+  const a   = document.createElement('a');
+  a.href = url; a.download = fname; a.click();
+  URL.revokeObjectURL(url);
 }
 
-// Saves the site to disk, showing progress. Two paths:
-//   - FSAA (Chrome/Edge/Firefox ≥ 111): streams JSON directly to disk, one image at a time.
-//   - Legacy (Safari / old browsers): builds full JSON in memory, falls back gracefully.
+
+// Saves the site to disk as a ZIP .cado file, showing progress. Two paths:
+//   - FSAA (Chrome/Edge/Firefox ≥ 111): streams ZIP directly to disk, one image at a time.
+//   - Legacy (Safari / old browsers): builds full ZIP in memory, downloads via a.download.
 // Shows the file picker BEFORE the progress overlay in FSAA mode (better UX).
 async function _saveSiteCore(site) {
   const fname = (site.name || 'site') + '.cado';
@@ -1138,12 +1176,12 @@ async function _saveSiteCore(site) {
   if (window.showSaveFilePicker) {
     const handle = await window.showSaveFilePicker({
       suggestedName: fname,
-      types: [{ description: 'Site CadoTour', accept: { 'application/json': ['.cado', '.json'] } }],
+      types: [{ description: 'Site CadoTour', accept: { 'application/octet-stream': ['.cado'] } }],
     });
     progress.show(`Sauvegarde de « ${site.name || 'le site'} »…`, total);
     const writable = await handle.createWritable();
     try {
-      await _streamSiteJSON(site, writable, cur => progress.update(cur));
+      await _saveSiteAsZip(site, writable, cur => progress.update(cur));
       await writable.close();
     } catch (err) {
       if (writable.abort) await writable.abort().catch(() => {});
@@ -1154,14 +1192,7 @@ async function _saveSiteCore(site) {
   } else {
     progress.show(`Sauvegarde de « ${site.name || 'le site'} »…`, total);
     try {
-      const exportable = await buildExportableSite(site, cur => progress.update(cur));
-      progress.setLabel('Génération du fichier…');
-      const json = JSON.stringify(exportable, null, 2);
-      const blob = new Blob([json], { type: 'application/json' });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href = url; a.download = fname; a.click();
-      URL.revokeObjectURL(url);
+      await _saveSiteAsZipLegacy(site, fname, cur => progress.update(cur));
     } finally {
       progress.hide();
     }
