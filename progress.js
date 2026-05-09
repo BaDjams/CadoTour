@@ -38,6 +38,11 @@ export function hide() {
   if (ov) ov.classList.add('hidden');
 }
 
+export function setLabel(text) {
+  const el = document.getElementById('progress-label');
+  if (el) el.textContent = text;
+}
+
 function _formatETA(seconds) {
   if (seconds < 1) return '< 1 s restante';
   if (seconds < 60) return `~${Math.ceil(seconds)} s restantes`;
