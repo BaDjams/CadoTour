@@ -252,14 +252,16 @@ async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
   };
 
   if (data.illustrationFile) {
-    data.illustrationId = await storeFromZip(data.illustrationFile, data.illustrationMime);
+    data.illustrationId       = await storeFromZip(data.illustrationFile, data.illustrationMime);
+    data.illustrationFilename = data.illustrationFile;
     delete data.illustrationFile; delete data.illustrationMime;
     tick();
   }
 
   for (const sp of data.sitePlans) {
     if (sp.imageFile) {
-      sp.imageId = await storeFromZip(sp.imageFile, sp.imageMime);
+      sp.imageId       = await storeFromZip(sp.imageFile, sp.imageMime);
+      sp.imageFilename = sp.imageFile;
       delete sp.imageFile; delete sp.imageMime;
       tick();
     }
@@ -269,7 +271,8 @@ async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
     bld.floors = bld.floors || [];
     for (const fl of bld.floors) {
       if (fl.imageFile) {
-        fl.imageId = await storeFromZip(fl.imageFile, fl.imageMime);
+        fl.imageId       = await storeFromZip(fl.imageFile, fl.imageMime);
+        fl.imageFilename = fl.imageFile;
         delete fl.imageFile; delete fl.imageMime;
         tick();
       }
@@ -281,12 +284,25 @@ async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
     pt.photos = pt.photos || [];
     for (const ph of pt.photos) {
       if (ph.imageFile) {
-        ph.imageId = await storeFromZip(ph.imageFile, ph.imageMime);
+        ph.imageId       = await storeFromZip(ph.imageFile, ph.imageMime);
+        ph.imageFilename = ph.imageFile;
         delete ph.imageFile; delete ph.imageMime;
         tick();
       }
     }
   }
+}
+
+const _CT_MIME_EXT = { 'image/jpeg':'jpg','image/jpg':'jpg','image/png':'png','image/webp':'webp','image/gif':'gif','image/bmp':'bmp' };
+async function _downloadImage(imageId, preferredFilename) {
+  const blob = await imageStore.getBlob(imageId);
+  if (!blob) return;
+  const ext  = _CT_MIME_EXT[blob.type] || null;
+  const name = preferredFilename || (imageId + (ext ? '.' + ext : ''));
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ===== SITE MARKERS =====
@@ -594,6 +610,18 @@ function getActivePlan() { return _getActivePlan(state, getActiveSite()); }
 async function renderPlan() {
   const active = getActivePlan();
   document.getElementById('plan-floor-name').textContent = active?.label || 'Plan';
+
+  const btnDl = document.getElementById('btn-download-plan');
+  if (btnDl) {
+    if (active?.imageId) {
+      btnDl.classList.remove('hidden');
+      btnDl.onclick = () => _downloadImage(active.imageId, active.imageFilename);
+    } else {
+      btnDl.classList.add('hidden');
+      btnDl.onclick = null;
+    }
+  }
+
   const canvas   = document.getElementById('plan-canvas');
   const viewport = document.getElementById('plan-viewport');
   const url = active?.imageId ? await imageStore.getURL(active.imageId) : null;
@@ -785,6 +813,17 @@ async function _renderViewerPhoto(point, photo) {
       descText.textContent  = photo.description;
     } else {
       descRow.style.display = 'none';
+    }
+  }
+
+  const btnDlPhoto = document.getElementById('btn-download-photo');
+  if (btnDlPhoto) {
+    if (photo.imageId) {
+      btnDlPhoto.classList.remove('hidden');
+      btnDlPhoto.onclick = () => _downloadImage(photo.imageId, photo.imageFilename);
+    } else {
+      btnDlPhoto.classList.add('hidden');
+      btnDlPhoto.onclick = null;
     }
   }
 }

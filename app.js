@@ -1005,23 +1005,36 @@ async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
   };
 
   if (data.illustrationFile) {
-    data.illustrationId = await storeFromZip(data.illustrationFile, data.illustrationMime);
+    data.illustrationId       = await storeFromZip(data.illustrationFile, data.illustrationMime);
+    data.illustrationFilename = data.illustrationFile;
     delete data.illustrationFile; delete data.illustrationMime; tick();
   }
   for (const sp of data.sitePlans) {
-    if (sp.imageFile) { sp.imageId = await storeFromZip(sp.imageFile, sp.imageMime); delete sp.imageFile; delete sp.imageMime; tick(); }
+    if (sp.imageFile) {
+      sp.imageId       = await storeFromZip(sp.imageFile, sp.imageMime);
+      sp.imageFilename = sp.imageFile;
+      delete sp.imageFile; delete sp.imageMime; tick();
+    }
   }
   for (const bld of data.buildings) {
     bld.floors = bld.floors || [];
     for (const fl of bld.floors) {
-      if (fl.imageFile) { fl.imageId = await storeFromZip(fl.imageFile, fl.imageMime); delete fl.imageFile; delete fl.imageMime; tick(); }
+      if (fl.imageFile) {
+        fl.imageId       = await storeFromZip(fl.imageFile, fl.imageMime);
+        fl.imageFilename = fl.imageFile;
+        delete fl.imageFile; delete fl.imageMime; tick();
+      }
     }
   }
   for (const pt of data.points) {
     if (pt.bearing == null) pt.bearing = 0;
     pt.photos = pt.photos || [];
     for (const ph of pt.photos) {
-      if (ph.imageFile) { ph.imageId = await storeFromZip(ph.imageFile, ph.imageMime); delete ph.imageFile; delete ph.imageMime; tick(); }
+      if (ph.imageFile) {
+        ph.imageId       = await storeFromZip(ph.imageFile, ph.imageMime);
+        ph.imageFilename = ph.imageFile;
+        delete ph.imageFile; delete ph.imageMime; tick();
+      }
       delete ph.thumbnail;
     }
   }
@@ -1032,22 +1045,51 @@ async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
 const _MIME_EXT = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'image/bmp': 'bmp' };
 function _mimeToExt(mime) { return _MIME_EXT[mime] || null; }
 
+async function _downloadImage(imageId, preferredFilename) {
+  const blob = await imageStore.getBlob(imageId);
+  if (!blob) return;
+  const ext  = _mimeToExt(blob.type);
+  const name = preferredFilename || (imageId + (ext ? '.' + ext : ''));
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
+
 // Collecte toutes les références d'images du site → Map<imageId, {filename, mime, blob}>.
 // getBlob() renvoie un Blob sans charger les octets dans le heap V8 (juste un handle natif).
+// Le nom de fichier dans le ZIP est le nom original (imageFilename) ou l'imageId en fallback.
+// Les doublons de noms sont disambigués avec un suffixe (2), (3)…
 async function _collectImageMap(site) {
-  const map = new Map();
-  const register = async id => {
+  const map       = new Map();
+  const usedNames = new Set();
+
+  const uniqueName = preferred => {
+    if (!usedNames.has(preferred)) { usedNames.add(preferred); return preferred; }
+    const dot  = preferred.lastIndexOf('.');
+    const stem = dot > 0 ? preferred.slice(0, dot) : preferred;
+    const ext  = dot > 0 ? preferred.slice(dot)  : '';
+    let n = 2;
+    while (usedNames.has(`${stem} (${n})${ext}`)) n++;
+    const name = `${stem} (${n})${ext}`;
+    usedNames.add(name); return name;
+  };
+
+  const register = async (id, preferredName) => {
     if (!id || map.has(id)) return;
     const blob = await imageStore.getBlob(id);
     if (!blob) return;
-    const mime = blob.type || 'application/octet-stream';
-    const ext  = _mimeToExt(mime);
-    map.set(id, { filename: id + (ext ? '.' + ext : ''), mime, blob });
+    const mime     = blob.type || 'application/octet-stream';
+    const ext      = _mimeToExt(mime);
+    const fallback = id + (ext ? '.' + ext : '');
+    const filename = uniqueName(preferredName || fallback);
+    map.set(id, { filename, mime, blob });
   };
-  if (site.illustrationId) await register(site.illustrationId);
-  for (const sp of site.sitePlans || []) if (sp.imageId) await register(sp.imageId);
-  for (const bld of site.buildings || []) for (const fl of bld.floors || []) if (fl.imageId) await register(fl.imageId);
-  for (const pt of site.points || []) for (const ph of pt.photos || []) if (ph.imageId) await register(ph.imageId);
+
+  if (site.illustrationId) await register(site.illustrationId, site.illustrationFilename);
+  for (const sp of site.sitePlans || []) if (sp.imageId) await register(sp.imageId, sp.imageFilename);
+  for (const bld of site.buildings || []) for (const fl of bld.floors || []) if (fl.imageId) await register(fl.imageId, fl.imageFilename);
+  for (const pt of site.points || []) for (const ph of pt.photos || []) if (ph.imageId) await register(ph.imageId, ph.imageFilename);
   return map;
 }
 
@@ -1971,7 +2013,7 @@ async function confirmAddFloor() {
   const file = document.getElementById('input-floor-plan').files[0];
   const imageId = file ? await imageStore.putBlob(file) : null;
 
-  const floor = { id: uid(), name, imageId };
+  const floor = { id: uid(), name, imageId, imageFilename: file?.name || null };
   building.floors.push(floor);
   hideModal('modal-add-floor');
   selectFloor(building.id, floor.id);
@@ -2016,7 +2058,7 @@ async function confirmAddSitePlan() {
   const file = document.getElementById('input-siteplan-file').files[0];
   const imageId = file ? await imageStore.putBlob(file) : null;
 
-  const sp = { id: uid(), name, imageId };
+  const sp = { id: uid(), name, imageId, imageFilename: file?.name || null };
   site.sitePlans.push(sp);
   hideModal('modal-add-siteplan');
   selectSitePlan(sp.id);
@@ -2054,6 +2096,17 @@ async function renderPlan() {
 
   document.getElementById('plan-floor-name').textContent = active.label;
 
+  const btnDl = document.getElementById('btn-download-plan');
+  if (btnDl) {
+    if (active.imageId) {
+      btnDl.classList.remove('hidden');
+      btnDl.onclick = () => _downloadImage(active.imageId, active.imageFilename);
+    } else {
+      btnDl.classList.add('hidden');
+      btnDl.onclick = null;
+    }
+  }
+
   const canvas   = document.getElementById('plan-canvas');
   const viewport = document.getElementById('plan-viewport');
 
@@ -2078,7 +2131,7 @@ async function renderPlan() {
   img.src = url;
 }
 
-function updateActivePlanImage(imageId) {
+function updateActivePlanImage(imageId, filename) {
   const site = getActiveSite();
   if (!site) return;
 
@@ -2087,6 +2140,7 @@ function updateActivePlanImage(imageId) {
     if (sp) {
       if (sp.imageId) imageStore.deleteImage(sp.imageId);
       sp.imageId = imageId;
+      sp.imageFilename = filename || null;
       renderPlan();
     }
   } else if (state.activeBuildingId && state.activeFloorId) {
@@ -2095,6 +2149,7 @@ function updateActivePlanImage(imageId) {
     if (floor) {
       if (floor.imageId) imageStore.deleteImage(floor.imageId);
       floor.imageId = imageId;
+      floor.imageFilename = filename || null;
       renderPlan();
     }
   }
@@ -2523,7 +2578,7 @@ async function confirmAddPhoto() {
     const title   = baseTitle
       ? (multi ? `${baseTitle} ${i + 1}` : baseTitle)
       : file.name.replace(/\.[^.]+$/, '');
-    newPhotos.push({ id: uid(), title, description: desc, imageId });
+    newPhotos.push({ id: uid(), title, description: desc, imageId, imageFilename: file.name });
   }
 
   let point;
@@ -2661,6 +2716,17 @@ async function _renderViewerPhoto(point, photo) {
 
   document.getElementById('bearing-row').classList.remove('hidden');
   document.getElementById('edit-photo-bearing').value = Math.round(point.bearing ?? 0);
+
+  const btnDlPhoto = document.getElementById('btn-download-photo');
+  if (btnDlPhoto) {
+    if (photo.imageId) {
+      btnDlPhoto.classList.remove('hidden');
+      btnDlPhoto.onclick = () => _downloadImage(photo.imageId, photo.imageFilename);
+    } else {
+      btnDlPhoto.classList.add('hidden');
+      btnDlPhoto.onclick = null;
+    }
+  }
 }
 
 function closeViewer() {
@@ -2888,7 +2954,7 @@ function init() {
     const file = e.target.files[0];
     if (!file) return;
     const imageId = await imageStore.putBlob(file);
-    updateActivePlanImage(imageId);
+    updateActivePlanImage(imageId, file.name);
   });
 
   // ---- Viewer / editor ----
@@ -2913,6 +2979,7 @@ function init() {
     if (!photo || !point) return;
     if (photo.imageId) imageStore.deleteImage(photo.imageId);
     photo.imageId = await imageStore.putBlob(file);
+    photo.imageFilename = file.name;
     await _renderViewerPhoto(point, photo);
     scheduleCacheSave();
   });
