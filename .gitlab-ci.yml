@@ -33,6 +33,6 @@ docker-deploy:
     - git reset --hard origin/$CI_COMMIT_BRANCH
     - sed -i "s|${CI_REGISTRY_IMAGE}:[^[:space:]]*|${DOCKER_IMAGE_NAME}|g" docker-compose.yml
     - git commit -am "[skip ci] Deploy image ${CI_COMMIT_SHORT_SHA}"
-    - git push "https://gitlab-ci-token:${REPOSITORY_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" $CI_COMMIT_BRANCH
+    - git push "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" $CI_COMMIT_BRANCH
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
