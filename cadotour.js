@@ -294,11 +294,17 @@ async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
 }
 
 const _CT_MIME_EXT = { 'image/jpeg':'jpg','image/jpg':'jpg','image/png':'png','image/webp':'webp','image/gif':'gif','image/bmp':'bmp' };
-async function _downloadImage(imageId, preferredFilename) {
+
+function _sanitizeFilename(str) {
+  return (str || '').replace(/[/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'fichier';
+}
+
+// nameFn peut être une chaîne ou une fonction (ext) => string.
+async function _downloadImage(imageId, nameFn) {
   const blob = await imageStore.getBlob(imageId);
   if (!blob) return;
   const ext  = _CT_MIME_EXT[blob.type] || null;
-  const name = preferredFilename || (imageId + (ext ? '.' + ext : ''));
+  const name = typeof nameFn === 'function' ? nameFn(ext) : (nameFn || (imageId + (ext ? '.' + ext : '')));
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
   a.href = url; a.download = name; a.click();
@@ -615,7 +621,12 @@ async function renderPlan() {
   if (btnDl) {
     if (active?.imageId) {
       btnDl.classList.remove('hidden');
-      btnDl.onclick = () => _downloadImage(active.imageId, active.imageFilename);
+      btnDl.onclick = () => {
+        const site = getActiveSite();
+        _downloadImage(active.imageId, ext =>
+          _sanitizeFilename(`${site?.name || 'site'}_${active.label}`) + (ext ? '.' + ext : '')
+        );
+      };
     } else {
       btnDl.classList.add('hidden');
       btnDl.onclick = null;
@@ -820,7 +831,9 @@ async function _renderViewerPhoto(point, photo) {
   if (btnDlPhoto) {
     if (photo.imageId) {
       btnDlPhoto.classList.remove('hidden');
-      btnDlPhoto.onclick = () => _downloadImage(photo.imageId, photo.imageFilename);
+      btnDlPhoto.onclick = () => _downloadImage(photo.imageId, ext =>
+        _sanitizeFilename(photo.title || 'photo') + (ext ? '.' + ext : '')
+      );
     } else {
       btnDlPhoto.classList.add('hidden');
       btnDlPhoto.onclick = null;
