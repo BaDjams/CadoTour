@@ -1,0 +1,38 @@
+
+stages:
+  - build
+  - deploy
+
+variables:
+  DOCKER_IMAGE_NAME: ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}
+  DOCKER_TLS_CERTDIR: ""
+
+docker-build:
+  stage: build
+  services:
+    - name: docker:dind
+      command: ["--tls=false"]
+  before_script:
+    - echo "${CI_REGISTRY_PASSWORD}" | docker login ${CI_REGISTRY} -u ${CI_REGISTRY_USER} --password-stdin
+  script:
+    - docker build --provenance=false -t "${DOCKER_IMAGE_NAME}" .
+    - docker tag "${DOCKER_IMAGE_NAME}" "${CI_REGISTRY_IMAGE}:latest"
+    - docker push "${CI_REGISTRY_IMAGE}:latest"
+    - docker push "${DOCKER_IMAGE_NAME}"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+docker-deploy:
+  stage: deploy
+  image: alpine
+  script:
+    - apk add git
+    - git config --global user.email "${GITLAB_USER_EMAIL}"
+    - git config --global user.name "${GITLAB_USER_LOGIN}"
+    - git checkout $CI_COMMIT_BRANCH
+    - git reset --hard origin/$CI_COMMIT_BRANCH
+    - sed -i "s|${CI_REGISTRY_IMAGE}:[^[:space:]]*|${DOCKER_IMAGE_NAME}|g" docker-compose.yml
+    - git commit -am "[skip ci] Deploy image ${CI_COMMIT_SHORT_SHA}"
+    - git push "https://gitlab-ci-token:${REPOSITORY_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" $CI_COMMIT_BRANCH
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

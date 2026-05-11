@@ -1,0 +1,13 @@
+ services:
+  cadotour:
+    image: docker.promogi.fr/romain.jamet/cadotour:60869f2a
+    restart: always
+
+  proxy:
+    image: docker.promogi.fr/neogi/infra/nginx-proxy:latest
+    restart: always
+    ports:
+      - 443:443
+    environment:
+      NGINX_SERVER_NAME: cadotour.promogi.fr
+      NGINX_PROXY: http://cadotour:80
