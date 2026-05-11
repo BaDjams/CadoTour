@@ -1108,9 +1108,10 @@ function _buildMetaFromSite(site, imageMap) {
     const { filename, mime } = imageMap.get(site.illustrationId);
     meta.illustrationFile = filename; meta.illustrationMime = mime;
   }
+  const IMG_BLOB_SKIP = new Set(['imageId', 'imageDataURL', 'dataURL', 'thumbnail']);
   meta.sitePlans = (site.sitePlans || []).map(sp => {
     const out = {};
-    for (const [k, v] of Object.entries(sp)) { if (k !== 'imageId' && v !== undefined) out[k] = v; }
+    for (const [k, v] of Object.entries(sp)) { if (!IMG_BLOB_SKIP.has(k) && v !== undefined) out[k] = v; }
     if (sp.imageId && imageMap.has(sp.imageId)) { const { filename, mime } = imageMap.get(sp.imageId); out.imageFile = filename; out.imageMime = mime; }
     return out;
   });
@@ -1119,7 +1120,7 @@ function _buildMetaFromSite(site, imageMap) {
     for (const [k, v] of Object.entries(bld)) { if (k !== 'floors' && v !== undefined) out[k] = v; }
     out.floors = (bld.floors || []).map(fl => {
       const fOut = {};
-      for (const [k, v] of Object.entries(fl)) { if (k !== 'imageId' && v !== undefined) fOut[k] = v; }
+      for (const [k, v] of Object.entries(fl)) { if (!IMG_BLOB_SKIP.has(k) && v !== undefined) fOut[k] = v; }
       if (fl.imageId && imageMap.has(fl.imageId)) { const { filename, mime } = imageMap.get(fl.imageId); fOut.imageFile = filename; fOut.imageMime = mime; }
       return fOut;
     });
@@ -1130,7 +1131,7 @@ function _buildMetaFromSite(site, imageMap) {
     for (const [k, v] of Object.entries(pt)) { if (k !== 'photos' && v !== undefined) out[k] = v; }
     out.photos = (pt.photos || []).map(ph => {
       const pOut = {};
-      for (const [k, v] of Object.entries(ph)) { if (k !== 'imageId' && v !== undefined) pOut[k] = v; }
+      for (const [k, v] of Object.entries(ph)) { if (!IMG_BLOB_SKIP.has(k) && v !== undefined) pOut[k] = v; }
       if (ph.imageId && imageMap.has(ph.imageId)) { const { filename, mime } = imageMap.get(ph.imageId); pOut.imageFile = filename; pOut.imageMime = mime; }
       return pOut;
     });
@@ -1150,8 +1151,9 @@ async function _saveSiteAsZip(site, writable, onProgress) {
   const meta     = _buildMetaFromSite(site, imageMap);
 
   let pendingWrite = Promise.resolve();
+  let _zipErr = null;
   const zip = new fflate.Zip((err, chunk) => {
-    if (err) return;
+    if (err) { _zipErr = err; return; }
     pendingWrite = pendingWrite.then(() => writable.write(chunk));
   });
 
@@ -1159,6 +1161,7 @@ async function _saveSiteAsZip(site, writable, onProgress) {
   zip.add(metaEntry);
   metaEntry.push(enc.encode(JSON.stringify(meta)), true);
   await pendingWrite;
+  if (_zipErr) throw _zipErr;
 
   for (const [, { filename, blob }] of imageMap) {
     const arr = new Uint8Array(await blob.arrayBuffer()); // charge UNE image en heap
@@ -1166,15 +1169,17 @@ async function _saveSiteAsZip(site, writable, onProgress) {
     zip.add(entry);
     entry.push(arr, true);
     await pendingWrite; // flush vers disque avant l'image suivante
+    if (_zipErr) throw _zipErr;
     tick();
   }
 
   zip.end();
   await pendingWrite;
+  if (_zipErr) throw _zipErr;
 }
 
 // Chemin legacy (Safari / navigateurs sans FSAA) : ZIP en mémoire + a.download.
-// Pic mémoire : ~500 Mo (ZIP complet) — mieux que ~1,4 Go du JSON+base64 précédent.
+// Pic mémoire : ~taille ZIP (pas d'allocation intermédiaire grâce à new Blob(chunks)).
 async function _saveSiteAsZipLegacy(site, fname, onProgress) {
   const enc = new TextEncoder();
   let done = 0;
@@ -1184,27 +1189,30 @@ async function _saveSiteAsZipLegacy(site, fname, onProgress) {
   const meta     = _buildMetaFromSite(site, imageMap);
 
   const chunks = [];
-  const zip = new fflate.Zip((err, chunk) => { if (!err) chunks.push(chunk); });
+  let _zipErr2 = null;
+  const zip = new fflate.Zip((err, chunk) => {
+    if (err) { _zipErr2 = err; return; }
+    chunks.push(chunk);
+  });
 
   const metaEntry = new fflate.ZipPassThrough('metadata.json');
   zip.add(metaEntry);
   metaEntry.push(enc.encode(JSON.stringify(meta)), true);
+  if (_zipErr2) throw _zipErr2;
 
   for (const [, { filename, blob }] of imageMap) {
     const arr = new Uint8Array(await blob.arrayBuffer());
     const entry = new fflate.ZipPassThrough(`images/${filename}`);
     zip.add(entry); entry.push(arr, true);
+    if (_zipErr2) throw _zipErr2;
     tick();
   }
 
   zip.end();
+  if (_zipErr2) throw _zipErr2;
   progress.setLabel('Génération du fichier…');
-  const totalLen = chunks.reduce((n, c) => n + c.length, 0);
-  const result = new Uint8Array(totalLen);
-  let offset = 0;
-  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
 
-  const dlBlob = new Blob([result], { type: 'application/zip' });
+  const dlBlob = new Blob(chunks, { type: 'application/zip' });
   const url = URL.createObjectURL(dlBlob);
   const a   = document.createElement('a');
   a.href = url; a.download = fname; a.click();
