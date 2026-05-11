@@ -1,6 +1,6 @@
  services:
   cadotour:
-    image: docker.promogi.fr/romain.jamet/cadotour:1a085d93
+    image: docker.promogi.fr/romain.jamet/cadotour:f1d77f6a
     restart: always
 
   proxy:
