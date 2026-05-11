@@ -8,7 +8,11 @@ const STORE_STATE  = 'state';   // existant : { 'sites' → JSON string }
 const STORE_IMAGES = 'images';  // nouveau  : { imageId → Blob }
 
 let _db = null;
-const _urlCache = new Map(); // imageId → objectURL
+// LRU cache d'objectURL : la Map JS préserve l'ordre d'insertion. On réinsère
+// à la lecture (get → delete + set) pour repousser l'entrée en fin = MRU.
+// Plafond fixe pour borner la mémoire des Blobs retenus vivants par les URL.
+const _urlCache = new Map(); // imageId → objectURL (LRU : oldest first)
+const URL_CACHE_MAX = 32;
 
 export async function openDB() {
   if (_db) return _db;
@@ -57,14 +61,28 @@ export async function getBlob(id) {
 }
 
 // Renvoie un objectURL utilisable dans <img src=…> ou Pannellum.
-// Le résultat est mis en cache jusqu'à révocation/suppression.
+// LRU borné par URL_CACHE_MAX : les URL les moins récemment utilisées sont
+// révoquées automatiquement, ce qui libère le Blob sous-jacent côté navigateur.
 export async function getURL(id) {
   if (!id) return null;
-  if (_urlCache.has(id)) return _urlCache.get(id);
+  if (_urlCache.has(id)) {
+    // Cache hit : repousser en fin pour marquer comme MRU
+    const cached = _urlCache.get(id);
+    _urlCache.delete(id);
+    _urlCache.set(id, cached);
+    return cached;
+  }
   const blob = await getBlob(id);
   if (!blob) return null;
   const url = URL.createObjectURL(blob);
   _urlCache.set(id, url);
+  // Éviction LRU si le plafond est dépassé
+  while (_urlCache.size > URL_CACHE_MAX) {
+    const oldestId = _urlCache.keys().next().value;
+    const oldestUrl = _urlCache.get(oldestId);
+    URL.revokeObjectURL(oldestUrl);
+    _urlCache.delete(oldestId);
+  }
   return url;
 }
 
