@@ -995,49 +995,52 @@ async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
   let done = 0;
   const tick = () => { done++; onProgress(done); };
 
-  const storeFromZip = async (imageFile, imageMime) => {
-    if (!imageFile) return null;
-    const arr = zipFiles[`images/${imageFile}`];
-    if (!arr) return null;
-    const blob = new Blob([arr], { type: imageMime || 'application/octet-stream' });
-    delete zipFiles[`images/${imageFile}`]; // libère le Uint8Array après création du Blob
-    return imageStore.putBlob(blob);
+  // Buffer pour batcher les écritures IndexedDB. Chaque transaction IDB a un
+  // overhead fixe (~2 ms open/commit) ; en groupant N puts dans une seule tx
+  // on divise le coût total des I/O par ~N. Buffer flushé toutes les 32 entrées.
+  const BATCH_SIZE = 32;
+  const buffer = []; // { obj, idKey, blob }
+
+  const flush = async () => {
+    if (!buffer.length) return;
+    const ids = await imageStore.putBlobs(buffer.map(b => b.blob));
+    for (let i = 0; i < buffer.length; i++) {
+      buffer[i].obj[buffer[i].idKey] = ids[i];
+      tick();
+    }
+    buffer.length = 0;
   };
 
-  if (data.illustrationFile) {
-    data.illustrationId       = await storeFromZip(data.illustrationFile, data.illustrationMime);
-    data.illustrationFilename = data.illustrationFile;
-    delete data.illustrationFile; delete data.illustrationMime; tick();
-  }
-  for (const sp of data.sitePlans) {
-    if (sp.imageFile) {
-      sp.imageId       = await storeFromZip(sp.imageFile, sp.imageMime);
-      sp.imageFilename = sp.imageFile;
-      delete sp.imageFile; delete sp.imageMime; tick();
-    }
-  }
+  const enqueue = async (obj, fileKey, mimeKey, idKey) => {
+    const imageFile = obj[fileKey];
+    if (!imageFile) return;
+    const zipKey = `images/${imageFile}`;
+    const arr = zipFiles[zipKey];
+    if (!arr) return;
+    const blob = new Blob([arr], { type: obj[mimeKey] || 'application/octet-stream' });
+    delete zipFiles[zipKey]; // libère le Uint8Array dès le Blob créé
+    const filenameKey = idKey.replace(/Id$/, 'Filename');
+    obj[filenameKey] = imageFile;
+    delete obj[fileKey]; delete obj[mimeKey];
+    buffer.push({ obj, idKey, blob });
+    if (buffer.length >= BATCH_SIZE) await flush();
+  };
+
+  if (data.illustrationFile) await enqueue(data, 'illustrationFile', 'illustrationMime', 'illustrationId');
+  for (const sp of data.sitePlans) await enqueue(sp, 'imageFile', 'imageMime', 'imageId');
   for (const bld of data.buildings) {
     bld.floors = bld.floors || [];
-    for (const fl of bld.floors) {
-      if (fl.imageFile) {
-        fl.imageId       = await storeFromZip(fl.imageFile, fl.imageMime);
-        fl.imageFilename = fl.imageFile;
-        delete fl.imageFile; delete fl.imageMime; tick();
-      }
-    }
+    for (const fl of bld.floors) await enqueue(fl, 'imageFile', 'imageMime', 'imageId');
   }
   for (const pt of data.points) {
     if (pt.bearing == null) pt.bearing = 0;
     pt.photos = pt.photos || [];
     for (const ph of pt.photos) {
-      if (ph.imageFile) {
-        ph.imageId       = await storeFromZip(ph.imageFile, ph.imageMime);
-        ph.imageFilename = ph.imageFile;
-        delete ph.imageFile; delete ph.imageMime; tick();
-      }
+      await enqueue(ph, 'imageFile', 'imageMime', 'imageId');
       delete ph.thumbnail;
     }
   }
+  await flush(); // résidu < BATCH_SIZE
 }
 
 // ===== ZIP EXPORT HELPERS =====

@@ -50,6 +50,23 @@ export async function putBlobWithId(id, blob) {
   });
 }
 
+// Écriture groupée : une seule transaction pour N blobs. Amortit l'overhead
+// d'open/commit IndexedDB (~2 ms × N → ~5 ms total) lors d'imports massifs.
+// Retourne le tableau des ids générés, dans l'ordre des blobs passés.
+export async function putBlobs(blobs) {
+  if (!blobs.length) return [];
+  const ids = blobs.map(() => _genId());
+  const db = await openDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_IMAGES, 'readwrite');
+    const store = tx.objectStore(STORE_IMAGES);
+    for (let i = 0; i < blobs.length; i++) store.put(blobs[i], ids[i]);
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
+  });
+  return ids;
+}
+
 export async function getBlob(id) {
   if (!id) return null;
   const db = await openDB();
