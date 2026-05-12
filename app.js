@@ -1140,6 +1140,80 @@ async function _normalizeZipSite(data, imageEntries, onProgress = () => {}) {
 const _MIME_EXT = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'image/bmp': 'bmp' };
 function _mimeToExt(mime) { return _MIME_EXT[mime] || null; }
 
+// ===== PHOTO COMPRESSION (Sprint 1) =====
+// Recompresse les photos > 2 Mo en préservant l'aspect ratio.
+// PNG sans alpha → converti en JPEG (gain massif). PNG avec alpha → reste PNG.
+// 360° (point.type === '360' ou ratio ≈ 2:1) gardent une résolution plus haute.
+const _COMP_MAX_BYTES     = 2_000_000;
+const _COMP_QUALITY_START = 0.85;
+const _COMP_QUALITY_MIN   = 0.60;
+const _COMP_QUALITY_STEP  = 0.05;
+const _COMP_MAX_EDGE_PHOTO = 2560;
+const _COMP_MAX_EDGE_360   = 6144;
+
+function _hasAlphaChannel(ctx, w, h) {
+  // Scan strié (1 pixel sur 16) : suffisant pour détecter toute transparence
+  // pratique (icônes, bordures antialias) sans la latence d'un scan complet.
+  const data = ctx.getImageData(0, 0, w, h).data;
+  for (let i = 3; i < data.length; i += 4 * 16) {
+    if (data[i] < 255) return true;
+  }
+  return false;
+}
+
+function _changeFilenameExt(filename, newExt) {
+  const dot = filename.lastIndexOf('.');
+  const stem = dot > 0 ? filename.slice(0, dot) : filename;
+  return stem + '.' + newExt;
+}
+
+// Renvoie { bytes, mime } si la photo a été recompressée, sinon null (à garder telle quelle).
+async function _compressPhoto(arr, sourceMime, is360) {
+  if (arr.byteLength <= _COMP_MAX_BYTES) return null;
+
+  const sourceBlob = new Blob([arr], { type: sourceMime || 'application/octet-stream' });
+  let bitmap;
+  try { bitmap = await createImageBitmap(sourceBlob); }
+  catch { return null; } // format non décodable → on garde l'original
+
+  const maxEdge = is360 ? _COMP_MAX_EDGE_360 : _COMP_MAX_EDGE_PHOTO;
+  let w = bitmap.width, h = bitmap.height;
+  if (Math.max(w, h) > maxEdge) {
+    const scale = maxEdge / Math.max(w, h);
+    w = Math.round(w * scale);
+    h = Math.round(h * scale);
+  }
+
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+
+  // Détermine le format de sortie
+  let targetMime = 'image/jpeg';
+  if (sourceMime === 'image/png' && _hasAlphaChannel(ctx, w, h)) {
+    targetMime = 'image/png'; // préserve la transparence
+  } else if (sourceMime === 'image/webp') {
+    targetMime = 'image/webp';
+  }
+
+  let outBlob;
+  if (targetMime === 'image/png') {
+    // PNG sans réglage de qualité ; seul le resize a réduit la taille.
+    outBlob = await canvas.convertToBlob({ type: 'image/png' });
+  } else {
+    let q = _COMP_QUALITY_START;
+    outBlob = await canvas.convertToBlob({ type: targetMime, quality: q });
+    while (outBlob.size > _COMP_MAX_BYTES && q > _COMP_QUALITY_MIN + 0.001) {
+      q = Math.max(_COMP_QUALITY_MIN, q - _COMP_QUALITY_STEP);
+      outBlob = await canvas.convertToBlob({ type: targetMime, quality: q });
+    }
+  }
+
+  const outBytes = new Uint8Array(await outBlob.arrayBuffer());
+  return { bytes: outBytes, mime: targetMime };
+}
+
 function _sanitizeFilename(str) {
   return (str || '').replace(/[/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'fichier';
 }
@@ -1175,7 +1249,7 @@ async function _collectImageMap(site) {
     usedNames.add(name); return name;
   };
 
-  const register = async (id, preferredName) => {
+  const register = async (id, preferredName, isPhoto = false, is360 = false) => {
     if (!id || map.has(id)) return;
     const blob = await imageStore.getBlob(id);
     if (!blob) return;
@@ -1183,13 +1257,13 @@ async function _collectImageMap(site) {
     const ext      = _mimeToExt(mime);
     const fallback = id + (ext ? '.' + ext : '');
     const filename = uniqueName(preferredName || fallback);
-    map.set(id, { filename, mime, blob });
+    map.set(id, { filename, mime, blob, isPhoto, is360 });
   };
 
   // Photos en lazy load : pas d'imageId, on lit l'entry zip.js directement
   // à l'écriture du nouveau ZIP. Évite l'extraction → IDB → relecture en
   // mémoire pour les photos jamais ouvertes (pass-through).
-  const registerLazy = (ph) => {
+  const registerLazy = (ph, is360) => {
     if (!ph.imageFile) return;
     const bundle = siteZipSources.get(site.id);
     if (!bundle) return;
@@ -1199,15 +1273,18 @@ async function _collectImageMap(site) {
     if (map.has(key)) return;
     const mime = ph.imageMime || 'application/octet-stream';
     const filename = uniqueName(ph.imageFilename || ph.imageFile);
-    map.set(key, { filename, mime, entry });
+    map.set(key, { filename, mime, entry, isPhoto: true, is360 });
   };
 
   if (site.illustrationId) await register(site.illustrationId, site.illustrationFilename);
   for (const sp of site.sitePlans || []) if (sp.imageId) await register(sp.imageId, sp.imageFilename);
   for (const bld of site.buildings || []) for (const fl of bld.floors || []) if (fl.imageId) await register(fl.imageId, fl.imageFilename);
-  for (const pt of site.points || []) for (const ph of pt.photos || []) {
-    if (ph.imageId) await register(ph.imageId, ph.imageFilename);
-    else registerLazy(ph);
+  for (const pt of site.points || []) {
+    const is360 = pt.type === '360';
+    for (const ph of pt.photos || []) {
+      if (ph.imageId) await register(ph.imageId, ph.imageFilename, true, is360);
+      else registerLazy(ph, is360);
+    }
   }
   return map;
 }
@@ -1266,13 +1343,16 @@ function _buildMetaFromSite(site, imageMap) {
 
 // Streaming ZIP → FileSystemWritableFileStream (FSAA).
 // Pic mémoire : ~une image à la fois (blob.arrayBuffer() charge ~2 Mo, puis libéré).
-async function _saveSiteAsZip(site, writable, onProgress) {
+// L'ordre d'écriture est : (1) toutes les images (avec compression éventuelle qui
+// peut changer mime/extension), puis (2) metadata.json — pour que la metadata
+// référence les filenames/mimes finalisés. zip.js gère l'ordre arbitraire à la lecture.
+async function _saveSiteAsZip(site, writable, onProgress, options = {}) {
   const enc = new TextEncoder();
+  const compress = options.compress !== false;
   let done = 0;
   const tick = () => { done++; onProgress(done); };
 
   const imageMap = await _collectImageMap(site);
-  const meta     = _buildMetaFromSite(site, imageMap);
 
   let pendingWrite = Promise.resolve();
   let _zipErr = null;
@@ -1281,30 +1361,43 @@ async function _saveSiteAsZip(site, writable, onProgress) {
     pendingWrite = pendingWrite.then(() => writable.write(chunk));
   });
 
+  // Phase 1 : écriture de chaque image, compressée si demandé
+  for (const [, mapEntry] of imageMap) {
+    let arr;
+    if (mapEntry.blob) {
+      arr = new Uint8Array(await mapEntry.blob.arrayBuffer());
+    } else if (mapEntry.entry) {
+      const b = await mapEntry.entry.getData(new BlobWriter(mapEntry.mime));
+      arr = new Uint8Array(await b.arrayBuffer());
+    } else continue;
+
+    if (compress && mapEntry.isPhoto) {
+      const r = await _compressPhoto(arr, mapEntry.mime, mapEntry.is360);
+      if (r) {
+        arr = r.bytes;
+        if (r.mime !== mapEntry.mime) {
+          mapEntry.mime = r.mime;
+          const newExt = _mimeToExt(r.mime);
+          if (newExt) mapEntry.filename = _changeFilenameExt(mapEntry.filename, newExt);
+        }
+      }
+    }
+
+    const fflateEntry = new fflate.ZipPassThrough(`images/${mapEntry.filename}`);
+    zip.add(fflateEntry);
+    fflateEntry.push(arr, true);
+    await pendingWrite;
+    if (_zipErr) throw _zipErr;
+    tick();
+  }
+
+  // Phase 2 : metadata.json après que tous les filenames/mimes soient finalisés
+  const meta = _buildMetaFromSite(site, imageMap);
   const metaEntry = new fflate.ZipPassThrough('metadata.json');
   zip.add(metaEntry);
   metaEntry.push(enc.encode(JSON.stringify(meta)), true);
   await pendingWrite;
   if (_zipErr) throw _zipErr;
-
-  for (const [, mapEntry] of imageMap) {
-    const { filename, mime } = mapEntry;
-    // Source des octets : Blob IDB pour les images extraites, ou entry zip.js
-    // pour les photos en lazy load (passthrough depuis le ZIP source).
-    let arr;
-    if (mapEntry.blob) {
-      arr = new Uint8Array(await mapEntry.blob.arrayBuffer());
-    } else if (mapEntry.entry) {
-      const b = await mapEntry.entry.getData(new BlobWriter(mime));
-      arr = new Uint8Array(await b.arrayBuffer());
-    } else continue;
-    const fflateEntry = new fflate.ZipPassThrough(`images/${filename}`);
-    zip.add(fflateEntry);
-    fflateEntry.push(arr, true);
-    await pendingWrite; // flush vers disque avant l'image suivante
-    if (_zipErr) throw _zipErr;
-    tick();
-  }
 
   zip.end();
   await pendingWrite;
@@ -1313,13 +1406,13 @@ async function _saveSiteAsZip(site, writable, onProgress) {
 
 // Chemin legacy (Safari / navigateurs sans FSAA) : ZIP en mémoire + a.download.
 // Pic mémoire : ~taille ZIP (pas d'allocation intermédiaire grâce à new Blob(chunks)).
-async function _saveSiteAsZipLegacy(site, fname, onProgress) {
+async function _saveSiteAsZipLegacy(site, fname, onProgress, options = {}) {
   const enc = new TextEncoder();
+  const compress = options.compress !== false;
   let done = 0;
   const tick = () => { done++; onProgress(done); };
 
   const imageMap = await _collectImageMap(site);
-  const meta     = _buildMetaFromSite(site, imageMap);
 
   const chunks = [];
   let _zipErr2 = null;
@@ -1328,25 +1421,40 @@ async function _saveSiteAsZipLegacy(site, fname, onProgress) {
     chunks.push(chunk);
   });
 
-  const metaEntry = new fflate.ZipPassThrough('metadata.json');
-  zip.add(metaEntry);
-  metaEntry.push(enc.encode(JSON.stringify(meta)), true);
-  if (_zipErr2) throw _zipErr2;
-
+  // Phase 1 : images (compressées si activé) — voir _saveSiteAsZip pour le rationnel.
   for (const [, mapEntry] of imageMap) {
-    const { filename, mime } = mapEntry;
     let arr;
     if (mapEntry.blob) {
       arr = new Uint8Array(await mapEntry.blob.arrayBuffer());
     } else if (mapEntry.entry) {
-      const b = await mapEntry.entry.getData(new BlobWriter(mime));
+      const b = await mapEntry.entry.getData(new BlobWriter(mapEntry.mime));
       arr = new Uint8Array(await b.arrayBuffer());
     } else continue;
-    const fflateEntry = new fflate.ZipPassThrough(`images/${filename}`);
+
+    if (compress && mapEntry.isPhoto) {
+      const r = await _compressPhoto(arr, mapEntry.mime, mapEntry.is360);
+      if (r) {
+        arr = r.bytes;
+        if (r.mime !== mapEntry.mime) {
+          mapEntry.mime = r.mime;
+          const newExt = _mimeToExt(r.mime);
+          if (newExt) mapEntry.filename = _changeFilenameExt(mapEntry.filename, newExt);
+        }
+      }
+    }
+
+    const fflateEntry = new fflate.ZipPassThrough(`images/${mapEntry.filename}`);
     zip.add(fflateEntry); fflateEntry.push(arr, true);
     if (_zipErr2) throw _zipErr2;
     tick();
   }
+
+  // Phase 2 : metadata.json après finalisation des filenames/mimes
+  const meta = _buildMetaFromSite(site, imageMap);
+  const metaEntry = new fflate.ZipPassThrough('metadata.json');
+  zip.add(metaEntry);
+  metaEntry.push(enc.encode(JSON.stringify(meta)), true);
+  if (_zipErr2) throw _zipErr2;
 
   zip.end();
   if (_zipErr2) throw _zipErr2;
@@ -1364,8 +1472,10 @@ async function _saveSiteAsZipLegacy(site, fname, onProgress) {
 //   - FSAA (Chrome/Edge/Firefox ≥ 111): streams ZIP directly to disk, one image at a time.
 //   - Legacy (Safari / old browsers): builds full ZIP in memory, downloads via a.download.
 // Shows the file picker BEFORE the progress overlay in FSAA mode (better UX).
-async function _saveSiteCore(site) {
-  const fname = (site.name || 'site') + '.cado';
+async function _saveSiteCore(site, options = {}) {
+  const compress = options.compress !== false;
+  const baseName = (site.name || 'site') + (compress ? '_opti' : '');
+  const fname = baseName + '.cado';
   const total = countSiteImages(site);
 
   if (window.showSaveFilePicker) {
@@ -1376,7 +1486,7 @@ async function _saveSiteCore(site) {
     progress.show(`Sauvegarde de « ${site.name || 'le site'} »…`, total);
     const writable = await handle.createWritable();
     try {
-      await _saveSiteAsZip(site, writable, cur => progress.update(cur));
+      await _saveSiteAsZip(site, writable, cur => progress.update(cur), { compress });
       await writable.close();
     } catch (err) {
       if (writable.abort) await writable.abort().catch(() => {});
@@ -1387,18 +1497,56 @@ async function _saveSiteCore(site) {
   } else {
     progress.show(`Sauvegarde de « ${site.name || 'le site'} »…`, total);
     try {
-      await _saveSiteAsZipLegacy(site, fname, cur => progress.update(cur));
+      await _saveSiteAsZipLegacy(site, fname, cur => progress.update(cur), { compress });
     } finally {
       progress.hide();
     }
   }
 }
 
+// Modal "Sauvegarder" : checkbox compression + aperçu du nom de fichier.
+// Renvoie { compress } si l'utilisateur confirme, null s'il annule.
+function _askSaveOptions(site) {
+  return new Promise(resolve => {
+    const nameEl  = document.getElementById('save-site-name');
+    const checkbox = document.getElementById('save-compress-toggle');
+    const preview = document.getElementById('save-filename-preview');
+    const btnOk   = document.getElementById('btn-save-confirm');
+    const btnNo   = document.getElementById('btn-save-cancel');
+
+    nameEl.textContent = site.name || 'ce site';
+    checkbox.checked   = true;
+
+    const refreshPreview = () => {
+      const base = site.name || 'site';
+      preview.textContent = base + (checkbox.checked ? '_opti' : '') + '.cado';
+    };
+    refreshPreview();
+
+    const onChange  = () => refreshPreview();
+    const onConfirm = () => { cleanup(); resolve({ compress: checkbox.checked }); };
+    const onCancel  = () => { cleanup(); resolve(null); };
+    const cleanup = () => {
+      checkbox.removeEventListener('change', onChange);
+      btnOk.removeEventListener('click', onConfirm);
+      btnNo.removeEventListener('click', onCancel);
+      hideModal('modal-save-site');
+    };
+
+    checkbox.addEventListener('change', onChange);
+    btnOk.addEventListener('click', onConfirm);
+    btnNo.addEventListener('click', onCancel);
+    showModal('modal-save-site');
+  });
+}
+
 async function saveSite() {
   const site = getActiveSite();
   if (!site) return;
+  const opts = await _askSaveOptions(site);
+  if (!opts) return; // annulé
   try {
-    await _saveSiteCore(site);
+    await _saveSiteCore(site, opts);
     clearCacheState();
   } catch (err) {
     if (err.name !== 'AbortError') alert(`Échec de la sauvegarde :\n${err.message}`);
@@ -1419,9 +1567,11 @@ async function _doCloseSite(withSave) {
   if (!site) return;
 
   if (withSave) {
+    const opts = await _askSaveOptions(site);
+    if (!opts) return; // annulé → on ne ferme pas
     let ok = false;
     try {
-      await _saveSiteCore(site);
+      await _saveSiteCore(site, opts);
       ok = true;
     } catch (err) {
       if (err.name !== 'AbortError') alert(`Échec de la sauvegarde :\n${err.message}`);

@@ -863,7 +863,7 @@ textarea.input-field { resize: vertical; min-height: 60px; }
 .input-half { width: calc(50% - 4px); }
 
 /* ===== BUTTONS ===== */
-.btn-primary, .btn-secondary, .btn-danger, .btn-icon {
+.btn-primary, .btn-secondary, .btn-danger, .btn-info, .btn-success, .btn-icon {
   border: none;
   border-radius: var(--radius);
   cursor: pointer;
@@ -881,6 +881,12 @@ textarea.input-field { resize: vertical; min-height: 60px; }
 .btn-secondary:disabled { opacity: 0.4; cursor: default; }
 .btn-danger { background: var(--color-danger); color: #fff; }
 .btn-danger:hover { background: #962d22; }
+.btn-info    { background: var(--color-360);   color: #fff; }
+.btn-info:hover    { background: #1c5d85; }
+.btn-info:disabled { opacity: 0.4; cursor: default; }
+.btn-success { background: var(--color-success); color: #fff; }
+.btn-success:hover { background: #1f8b4c; }
+.btn-success:disabled { opacity: 0.4; cursor: default; }
 .btn-icon { background: none; color: var(--color-text-muted); padding: 4px 8px; border-radius: 4px; }
 .btn-icon:hover { background: var(--color-surface2); color: var(--color-text); }
 .btn-sm { padding: 4px 10px; font-size: 12px; }

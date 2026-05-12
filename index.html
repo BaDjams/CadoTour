@@ -343,9 +343,28 @@
     <p>Voulez-vous sauvegarder <strong id="close-site-name"></strong> avant de fermer ?</p>
     <p style="font-size:12px;color:var(--color-text-muted);margin-top:4px">Une fois fermé, les données ne seront plus en mémoire.</p>
     <div class="modal-actions" style="flex-direction:column;gap:8px">
-      <button id="btn-close-save"    class="btn-primary">💾 Sauvegarder et fermer</button>
+      <button id="btn-close-save"    class="btn-info"   >💾 Sauvegarder et fermer</button>
       <button id="btn-close-discard" class="btn-danger" >Fermer sans sauvegarder</button>
-      <button id="btn-close-cancel"  class="btn-secondary">Annuler</button>
+      <button id="btn-close-cancel"  class="btn-success">Annuler</button>
+    </div>
+  </div>
+</div>
+
+<!-- Save site dialog (compression option) -->
+<div id="modal-save-site" class="modal hidden">
+  <div class="modal-box">
+    <h2>Sauvegarder le site</h2>
+    <p>Sauvegarder <strong id="save-site-name"></strong> ?</p>
+    <label style="display:flex;align-items:flex-start;gap:8px;margin-top:14px;cursor:pointer">
+      <input id="save-compress-toggle" type="checkbox" checked style="margin-top:3px" />
+      <span>Compresser les photos&nbsp;<span style="color:var(--color-text-muted);font-size:12px">(taille fichier réduite, max&nbsp;2 Mo par photo)</span></span>
+    </label>
+    <p style="font-size:12px;color:var(--color-text-muted);margin-top:10px">
+      Nom du fichier&nbsp;: <code id="save-filename-preview" style="background:var(--color-surface2);padding:1px 6px;border-radius:3px"></code>
+    </p>
+    <div class="modal-actions" style="flex-direction:column;gap:8px;margin-top:12px">
+      <button id="btn-save-confirm" class="btn-info"   >💾 Sauvegarder</button>
+      <button id="btn-save-cancel"  class="btn-success">Annuler</button>
     </div>
   </div>
 </div>
