@@ -166,6 +166,7 @@ let mbtilesLayer    = null;
 let siteMarkers     = {};   // siteId      -> L.Marker
 let buildingMarkers = {};   // buildingId  -> L.Marker
 let pointMarkers    = {};   // pointId     -> L.Marker
+let pointCluster    = null; // L.MarkerClusterGroup (lazy init)
 let searchResultMarker = null;
 let perimeterLayer  = null;
 let accessArrowMarker = null;
@@ -1640,13 +1641,23 @@ function makePointIcon(type, bearing, isActive, count = 1) {
   });
 }
 
+function _ensurePointCluster() {
+  if (pointCluster) return pointCluster;
+  pointCluster = L.markerClusterGroup({
+    maxClusterRadius: 60,
+    showCoverageOnHover: false,
+    spiderfyOnMaxZoom: true,
+    chunkedLoading: true,
+  });
+  return pointCluster;
+}
+
 function addPointMarker(point) {
   if (!map) return;
   const isActive = point.id === state.activePointId;
   const icon = makePointIcon(point.type, point.bearing, isActive, point.photos.length);
 
   const m = L.marker([point.lat, point.lon], { icon })
-    .addTo(map)
     .on('click', e => {
       L.DomEvent.stopPropagation(e);
       if (interactionMode) return;
@@ -1673,14 +1684,18 @@ function addPointMarker(point) {
     .on('mouseout',  function () { this.getElement()?.classList.remove('hovered'); });
 
   pointMarkers[point.id] = m;
+  _ensurePointCluster().addLayer(m);
 }
 
 function removePointMarker(pointId) {
-  if (pointMarkers[pointId]) { pointMarkers[pointId].remove(); delete pointMarkers[pointId]; }
+  const m = pointMarkers[pointId];
+  if (!m) return;
+  if (pointCluster) pointCluster.removeLayer(m);
+  delete pointMarkers[pointId];
 }
 
 function clearPointMarkers() {
-  Object.values(pointMarkers).forEach(m => m.remove());
+  if (pointCluster) pointCluster.clearLayers();
   pointMarkers = {};
 }
 
@@ -1703,10 +1718,15 @@ function refreshMarkerActive() {
 }
 
 // ===== CLUSTER VISIBILITY =====
+// À bas zoom on n'affiche que les sites ; au-delà du seuil on bascule sur
+// les bâtiments + le cluster group qui regroupe les points automatiquement.
 function updateMarkersVisibility() {
   if (!map || !state.activeSiteId) return;
   const clustered = map.getZoom() < CLUSTER_ZOOM_THRESHOLD;
-  Object.values(pointMarkers).forEach(m => clustered ? m.remove() : m.addTo(map));
+  if (pointCluster) {
+    if (clustered) map.removeLayer(pointCluster);
+    else if (!map.hasLayer(pointCluster)) pointCluster.addTo(map);
+  }
   Object.values(buildingMarkers).forEach(m => clustered ? m.remove() : m.addTo(map));
   Object.values(siteMarkers).forEach(m => clustered ? m.addTo(map) : m.remove());
   if (perimeterLayer)    clustered ? perimeterLayer.remove()    : perimeterLayer.addTo(map);

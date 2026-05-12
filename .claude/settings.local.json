@@ -25,7 +25,10 @@
       "Bash(git stash *)",
       "Bash(git pull *)",
       "Bash(node --check imageStore.js)",
-      "Bash(node --check progress.js)"
+      "Bash(node --check progress.js)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\CADO\\\\Documents\\\\GitHub\\\\VirtualTour\" -Recurse -File -Name)",
+      "Bash(findstr /N \"function normalizeSite\\\\|function loadSiteFromFile\\\\|_migrateLoadedSite\\\\|imageDataURL\\\\|imageDataUrl\" \"c:\\\\Users\\\\CADO\\\\Documents\\\\GitHub\\\\VirtualTour\\\\app.js\")",
+      "PowerShell(head -60)"
     ]
   }
 }
