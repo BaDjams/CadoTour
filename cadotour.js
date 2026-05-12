@@ -32,7 +32,6 @@ let mbtilesLayer     = null;
 let siteMarkers      = {};
 let buildingMarkers  = {};
 let pointMarkers     = {};
-let pointCluster     = null;  // L.MarkerClusterGroup (lazy init)
 let perimeterLayer   = null;
 let accessArrowMarker = null;
 let pannellumViewer  = null;
@@ -388,42 +387,27 @@ function makePointIcon(type, bearing, isActive, count = 1) {
   });
 }
 
-function _ensurePointCluster() {
-  if (pointCluster) return pointCluster;
-  pointCluster = L.markerClusterGroup({
-    maxClusterRadius: 60,
-    showCoverageOnHover: false,
-    spiderfyOnMaxZoom: true,
-    chunkedLoading: true,  // ajoute les markers par paquets → plus de freeze à 4000+ points
-  });
-  return pointCluster;
-}
-
 function addPointMarker(point) {
   if (point.lat == null) return;
   const isActive = point.id === state.activePointId;
   const m = L.marker([point.lat, point.lon], {
     icon: makePointIcon(point.type, point.bearing, isActive, point.photos.length),
-  }).on('click', e => { L.DomEvent.stopPropagation(e); openViewer(point.id); });
+  })
+    .addTo(map)
+    .on('click', e => { L.DomEvent.stopPropagation(e); openViewer(point.id); });
   pointMarkers[point.id] = m;
-  _ensurePointCluster().addLayer(m);
 }
 
 function clearPointMarkers() {
-  if (pointCluster) pointCluster.clearLayers();
+  Object.values(pointMarkers).forEach(m => m.remove());
   pointMarkers = {};
 }
 
 // ===== CLUSTER VISIBILITY =====
-// À bas zoom on n'affiche que les sites ; au-delà du seuil on bascule sur
-// les bâtiments + le cluster group qui regroupe les points automatiquement.
 function updateMarkersVisibility() {
   if (!map || !state.activeSiteId) return;
   const clustered = map.getZoom() < CLUSTER_ZOOM_THRESHOLD;
-  if (pointCluster) {
-    if (clustered) map.removeLayer(pointCluster);
-    else if (!map.hasLayer(pointCluster)) pointCluster.addTo(map);
-  }
+  Object.values(pointMarkers).forEach(m => clustered ? m.remove() : m.addTo(map));
   Object.values(buildingMarkers).forEach(m => clustered ? m.remove() : m.addTo(map));
   Object.values(siteMarkers).forEach(m => clustered ? m.addTo(map) : m.remove());
   if (perimeterLayer)    clustered ? perimeterLayer.remove()    : perimeterLayer.addTo(map);
