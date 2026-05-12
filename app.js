@@ -1142,12 +1142,14 @@ function _mimeToExt(mime) { return _MIME_EXT[mime] || null; }
 
 // ===== PHOTO COMPRESSION (Sprint 1) =====
 // Recompresse les photos > 2 Mo en préservant l'aspect ratio.
+// Une seule passe : resize + JPEG quality 0.85. Pas d'itération qualité — le
+// gain marginal d'une 2e passe (2,001 Mo → 1,9 Mo) ne justifie pas la perte
+// visuelle d'un step de qualité supplémentaire. Une photo peut donc dépasser
+// 2 Mo en sortie, c'est ok.
 // PNG sans alpha → converti en JPEG (gain massif). PNG avec alpha → reste PNG.
-// 360° (point.type === '360' ou ratio ≈ 2:1) gardent une résolution plus haute.
-const _COMP_MAX_BYTES     = 2_000_000;
-const _COMP_QUALITY_START = 0.85;
-const _COMP_QUALITY_MIN   = 0.60;
-const _COMP_QUALITY_STEP  = 0.05;
+// 360° gardent une résolution plus haute (Pannellum dégrade sous ~4096 px).
+const _COMP_SKIP_THRESHOLD = 2_000_000; // photos déjà sous ce seuil : laissées telles quelles
+const _COMP_QUALITY        = 0.85;
 const _COMP_MAX_EDGE_PHOTO = 2560;
 const _COMP_MAX_EDGE_360   = 6144;
 
@@ -1169,7 +1171,7 @@ function _changeFilenameExt(filename, newExt) {
 
 // Renvoie { bytes, mime } si la photo a été recompressée, sinon null (à garder telle quelle).
 async function _compressPhoto(arr, sourceMime, is360) {
-  if (arr.byteLength <= _COMP_MAX_BYTES) return null;
+  if (arr.byteLength <= _COMP_SKIP_THRESHOLD) return null;
 
   const sourceBlob = new Blob([arr], { type: sourceMime || 'application/octet-stream' });
   let bitmap;
@@ -1197,18 +1199,12 @@ async function _compressPhoto(arr, sourceMime, is360) {
     targetMime = 'image/webp';
   }
 
-  let outBlob;
-  if (targetMime === 'image/png') {
-    // PNG sans réglage de qualité ; seul le resize a réduit la taille.
-    outBlob = await canvas.convertToBlob({ type: 'image/png' });
-  } else {
-    let q = _COMP_QUALITY_START;
-    outBlob = await canvas.convertToBlob({ type: targetMime, quality: q });
-    while (outBlob.size > _COMP_MAX_BYTES && q > _COMP_QUALITY_MIN + 0.001) {
-      q = Math.max(_COMP_QUALITY_MIN, q - _COMP_QUALITY_STEP);
-      outBlob = await canvas.convertToBlob({ type: targetMime, quality: q });
-    }
-  }
+  // Une seule passe d'encodage. La taille de sortie peut dépasser 2 Mo,
+  // c'est accepté : redescendre plus bas demanderait un step de qualité
+  // supplémentaire avec une perte visuelle disproportionnée vs le gain.
+  const outBlob = targetMime === 'image/png'
+    ? await canvas.convertToBlob({ type: 'image/png' })  // pas de quality pour PNG
+    : await canvas.convertToBlob({ type: targetMime, quality: _COMP_QUALITY });
 
   const outBytes = new Uint8Array(await outBlob.arrayBuffer());
   return { bytes: outBytes, mime: targetMime };
