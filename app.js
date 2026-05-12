@@ -28,10 +28,17 @@ function scheduleCacheSave() {
 
 async function saveCacheNow() {
   if (!state.sites.length) return;
+  // Les sites en lazy load référencent une source ZIP sur disque qui ne peut
+  // pas être persistée. Si on cache leur état et que l'app redémarre, les
+  // photos seront orphelines (imageFile sans imageId, sans source). On exclut
+  // ces sites du cache : l'utilisateur rechargera son fichier au prochain
+  // démarrage (rapide grâce au lazy load lui-même).
+  const persistable = state.sites.filter(s => !siteZipSources.has(s.id));
+  if (!persistable.length) return;
   try {
     const db = await _openDB();
     const tx = db.transaction(DB_STORE, 'readwrite');
-    tx.objectStore(DB_STORE).put(JSON.stringify(state.sites), 'sites');
+    tx.objectStore(DB_STORE).put(JSON.stringify(persistable), 'sites');
   } catch (e) { console.warn('Cache save failed:', e); }
 }
 
@@ -83,6 +90,19 @@ function countSiteImages(site) {
   }
   for (const pt of site.points || []) {
     for (const ph of pt.photos || []) if (ph.imageId || ph.imageFile || ph.dataURL) n++;
+  }
+  return n;
+}
+
+// Compte uniquement les images extraites au chargement (lazy load) :
+// illustration + plans de site + plans d'étage. Les photos des points sont
+// extraites à la demande et ne participent pas à la barre de progression du load.
+function countEagerImages(site) {
+  let n = 0;
+  if (site.illustrationId || site.illustrationFile || (typeof site.illustration === 'string' && site.illustration.startsWith('data:'))) n++;
+  for (const sp of site.sitePlans || []) if (sp.imageId || sp.imageFile || sp.imageDataURL) n++;
+  for (const bld of site.buildings || []) {
+    for (const fl of bld.floors || []) if (fl.imageId || fl.imageFile || fl.imageDataURL) n++;
   }
   return n;
 }
@@ -170,6 +190,42 @@ let pointMarkers    = {};   // pointId     -> L.Marker
 let searchResultMarker = null;
 let perimeterLayer  = null;
 let accessArrowMarker = null;
+
+// Sources ZIP des sites chargés en lazy : le ZipReader reste ouvert tant que
+// le site est en mémoire pour permettre l'extraction des photos à la demande.
+//   siteId → { reader: ZipReader, entries: Map<filename, Entry> }
+const siteZipSources = new Map();
+// Dédup des extractions concurrentes : si plusieurs callers résolvent la
+// même photo simultanément (clic + preload navigation), une seule extraction.
+const _lazyExtractionPending = new Map(); // photo → Promise<imageId>
+
+async function _ensurePhotoImageId(photo, siteId) {
+  if (photo.imageId) return photo.imageId;
+  if (!photo.imageFile) return null;
+  if (_lazyExtractionPending.has(photo)) return _lazyExtractionPending.get(photo);
+  const promise = (async () => {
+    const bundle = siteZipSources.get(siteId);
+    if (!bundle) return null;
+    const entry = bundle.entries.get(photo.imageFile);
+    if (!entry) return null;
+    const mime = photo.imageMime || 'application/octet-stream';
+    const blob = await entry.getData(new BlobWriter(mime));
+    photo.imageId = await imageStore.putBlob(blob);
+    // On garde imageFile/imageMime pour permettre la passe-through au save
+    // (si le user n'édite jamais la photo, on évite l'aller-retour IDB).
+    return photo.imageId;
+  })();
+  _lazyExtractionPending.set(photo, promise);
+  try { return await promise; }
+  finally { _lazyExtractionPending.delete(photo); }
+}
+
+async function _closeSiteZipSource(siteId) {
+  const bundle = siteZipSources.get(siteId);
+  if (!bundle) return;
+  siteZipSources.delete(siteId);
+  try { await bundle.reader.close(); } catch { /* swallow */ }
+}
 
 // ===== INTERACTION MODE =====
 // 'perimeter-draw' | 'access-arrow' | 'move-point' | 'orient-point' | 'move-building' | 'move-site' | null
@@ -960,8 +1016,12 @@ async function loadSiteFromFile(file) {
 // Lecture streaming via zip.js : pas de file.arrayBuffer(), donc pas de limite
 // d'allocation ArrayBuffer (~2 GiB sous V8). zip.js lit le central dir en
 // fin de fichier via Blob.slice() puis extrait chaque entrée à la demande.
+// Le reader reste ouvert après la fonction tant que le site est en mémoire,
+// car les photos sont en lazy load (extraites au premier viewing).
 async function _loadSiteFromZip(file) {
   const reader = new ZipReader(new BlobReader(file));
+  let success = false;
+  let registeredSiteId = null;
   try {
     const entries = await reader.getEntries();
     const metaEntry = entries.find(e => e.filename === 'metadata.json');
@@ -974,24 +1034,32 @@ async function _loadSiteFromZip(file) {
       return null;
     }
 
-    // Index des entrées images/* par nom relatif (sans le préfixe "images/")
     const imageEntries = new Map();
     for (const e of entries) {
       if (e.filename.startsWith('images/')) imageEntries.set(e.filename.slice(7), e);
     }
 
-    const total = countSiteImages(data);
+    const total = countEagerImages(data);
     progress.show(`Chargement de « ${data.name || 'le site'} »…`, total);
     try {
       await _normalizeZipSite(data, imageEntries, cur => progress.update(cur));
     } finally {
       progress.hide();
     }
+
+    // Si on recharge un site déjà ouvert, fermer son ancienne source ZIP.
+    if (data.id && siteZipSources.has(data.id)) await _closeSiteZipSource(data.id);
+    if (data.id) {
+      siteZipSources.set(data.id, { reader, entries: imageEntries });
+      registeredSiteId = data.id;
+    }
+    success = true;
     return data;
   } catch (e) {
     throw new Error('Fichier .cado ZIP invalide : ' + e.message);
   } finally {
-    await reader.close();
+    // Ne fermer le reader que si on n'a pas réussi à l'enregistrer
+    if (!success || !registeredSiteId) await reader.close();
   }
 }
 
@@ -1044,21 +1112,27 @@ async function _normalizeZipSite(data, imageEntries, onProgress = () => {}) {
     if (buffer.length >= BATCH_SIZE) await flush();
   };
 
+  // Eager : illustration, plans de site, plans d'étage. Petit nombre (~50 max)
+  // et nécessaires à la navigation → extraits immédiatement vers IndexedDB.
   if (data.illustrationFile) await enqueue(data, 'illustrationFile', 'illustrationMime', 'illustrationId');
   for (const sp of data.sitePlans) await enqueue(sp, 'imageFile', 'imageMime', 'imageId');
   for (const bld of data.buildings) {
     bld.floors = bld.floors || [];
     for (const fl of bld.floors) await enqueue(fl, 'imageFile', 'imageMime', 'imageId');
   }
+  await flush();
+
+  // Lazy : photos des points. On laisse imageFile/imageMime sur l'objet ;
+  // l'extraction se fera à la première ouverture dans le viewer ou à la save.
   for (const pt of data.points) {
     if (pt.bearing == null) pt.bearing = 0;
     pt.photos = pt.photos || [];
     for (const ph of pt.photos) {
-      await enqueue(ph, 'imageFile', 'imageMime', 'imageId');
+      // imageFilename est utilisé par les boutons de download / le naming ZIP
+      if (ph.imageFile && !ph.imageFilename) ph.imageFilename = ph.imageFile;
       delete ph.thumbnail;
     }
   }
-  await flush(); // résidu < BATCH_SIZE
 }
 
 // ===== ZIP EXPORT HELPERS =====
@@ -1112,10 +1186,29 @@ async function _collectImageMap(site) {
     map.set(id, { filename, mime, blob });
   };
 
+  // Photos en lazy load : pas d'imageId, on lit l'entry zip.js directement
+  // à l'écriture du nouveau ZIP. Évite l'extraction → IDB → relecture en
+  // mémoire pour les photos jamais ouvertes (pass-through).
+  const registerLazy = (ph) => {
+    if (!ph.imageFile) return;
+    const bundle = siteZipSources.get(site.id);
+    if (!bundle) return;
+    const entry = bundle.entries.get(ph.imageFile);
+    if (!entry) return;
+    const key  = `lazy:${site.id}:${ph.imageFile}`;
+    if (map.has(key)) return;
+    const mime = ph.imageMime || 'application/octet-stream';
+    const filename = uniqueName(ph.imageFilename || ph.imageFile);
+    map.set(key, { filename, mime, entry });
+  };
+
   if (site.illustrationId) await register(site.illustrationId, site.illustrationFilename);
   for (const sp of site.sitePlans || []) if (sp.imageId) await register(sp.imageId, sp.imageFilename);
   for (const bld of site.buildings || []) for (const fl of bld.floors || []) if (fl.imageId) await register(fl.imageId, fl.imageFilename);
-  for (const pt of site.points || []) for (const ph of pt.photos || []) if (ph.imageId) await register(ph.imageId, ph.imageFilename);
+  for (const pt of site.points || []) for (const ph of pt.photos || []) {
+    if (ph.imageId) await register(ph.imageId, ph.imageFilename);
+    else registerLazy(ph);
+  }
   return map;
 }
 
@@ -1153,7 +1246,17 @@ function _buildMetaFromSite(site, imageMap) {
     out.photos = (pt.photos || []).map(ph => {
       const pOut = {};
       for (const [k, v] of Object.entries(ph)) { if (!IMG_BLOB_SKIP.has(k) && v !== undefined) pOut[k] = v; }
-      if (ph.imageId && imageMap.has(ph.imageId)) { const { filename, mime } = imageMap.get(ph.imageId); pOut.imageFile = filename; pOut.imageMime = mime; }
+      if (ph.imageId && imageMap.has(ph.imageId)) {
+        const { filename, mime } = imageMap.get(ph.imageId);
+        pOut.imageFile = filename; pOut.imageMime = mime;
+      } else if (ph.imageFile) {
+        // Photo lazy : récupère le filename dédupé depuis la map de save
+        const lazyKey = `lazy:${site.id}:${ph.imageFile}`;
+        if (imageMap.has(lazyKey)) {
+          const { filename, mime } = imageMap.get(lazyKey);
+          pOut.imageFile = filename; pOut.imageMime = mime;
+        }
+      }
       return pOut;
     });
     return out;
@@ -1184,11 +1287,20 @@ async function _saveSiteAsZip(site, writable, onProgress) {
   await pendingWrite;
   if (_zipErr) throw _zipErr;
 
-  for (const [, { filename, blob }] of imageMap) {
-    const arr = new Uint8Array(await blob.arrayBuffer()); // charge UNE image en heap
-    const entry = new fflate.ZipPassThrough(`images/${filename}`);
-    zip.add(entry);
-    entry.push(arr, true);
+  for (const [, mapEntry] of imageMap) {
+    const { filename, mime } = mapEntry;
+    // Source des octets : Blob IDB pour les images extraites, ou entry zip.js
+    // pour les photos en lazy load (passthrough depuis le ZIP source).
+    let arr;
+    if (mapEntry.blob) {
+      arr = new Uint8Array(await mapEntry.blob.arrayBuffer());
+    } else if (mapEntry.entry) {
+      const b = await mapEntry.entry.getData(new BlobWriter(mime));
+      arr = new Uint8Array(await b.arrayBuffer());
+    } else continue;
+    const fflateEntry = new fflate.ZipPassThrough(`images/${filename}`);
+    zip.add(fflateEntry);
+    fflateEntry.push(arr, true);
     await pendingWrite; // flush vers disque avant l'image suivante
     if (_zipErr) throw _zipErr;
     tick();
@@ -1221,10 +1333,17 @@ async function _saveSiteAsZipLegacy(site, fname, onProgress) {
   metaEntry.push(enc.encode(JSON.stringify(meta)), true);
   if (_zipErr2) throw _zipErr2;
 
-  for (const [, { filename, blob }] of imageMap) {
-    const arr = new Uint8Array(await blob.arrayBuffer());
-    const entry = new fflate.ZipPassThrough(`images/${filename}`);
-    zip.add(entry); entry.push(arr, true);
+  for (const [, mapEntry] of imageMap) {
+    const { filename, mime } = mapEntry;
+    let arr;
+    if (mapEntry.blob) {
+      arr = new Uint8Array(await mapEntry.blob.arrayBuffer());
+    } else if (mapEntry.entry) {
+      const b = await mapEntry.entry.getData(new BlobWriter(mime));
+      arr = new Uint8Array(await b.arrayBuffer());
+    } else continue;
+    const fflateEntry = new fflate.ZipPassThrough(`images/${filename}`);
+    zip.add(fflateEntry); fflateEntry.push(arr, true);
     if (_zipErr2) throw _zipErr2;
     tick();
   }
@@ -1319,6 +1438,8 @@ async function _doCloseSite(withSave) {
   for (const pt of site.points || []) {
     for (const ph of pt.photos || []) if (ph.imageId) imageStore.deleteImage(ph.imageId);
   }
+  // Libère la source ZIP du site (si en lazy load)
+  await _closeSiteZipSource(site.id);
 
   const siteId = site.id;
 
@@ -2734,6 +2855,8 @@ async function _renderViewerPhoto(point, photo) {
   document.getElementById('panorama-viewer').classList.add('hidden');
   if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
 
+  // Lazy : extrait la photo de la source ZIP si pas encore en IDB.
+  await _ensurePhotoImageId(photo, state.activeSiteId);
   const url = photo.imageId ? await imageStore.getURL(photo.imageId) : '';
 
   if (point.type === '360') {
@@ -3021,6 +3144,9 @@ function init() {
     if (photo.imageId) imageStore.deleteImage(photo.imageId);
     photo.imageId = await imageStore.putBlob(file);
     photo.imageFilename = file.name;
+    // Photo n'est plus liée à la source ZIP (lazy obsolète après remplacement)
+    delete photo.imageFile;
+    delete photo.imageMime;
     await _renderViewerPhoto(point, photo);
     scheduleCacheSave();
   });

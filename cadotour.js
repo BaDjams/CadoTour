@@ -35,6 +35,36 @@ let buildingMarkers  = {};
 let pointMarkers     = {};
 let perimeterLayer   = null;
 let accessArrowMarker = null;
+
+// Sources ZIP des sites chargés en lazy : voir app.js pour les détails.
+const siteZipSources = new Map(); // siteId → { reader, entries }
+const _lazyExtractionPending = new Map();
+
+async function _ensurePhotoImageId(photo, siteId) {
+  if (photo.imageId) return photo.imageId;
+  if (!photo.imageFile) return null;
+  if (_lazyExtractionPending.has(photo)) return _lazyExtractionPending.get(photo);
+  const promise = (async () => {
+    const bundle = siteZipSources.get(siteId);
+    if (!bundle) return null;
+    const entry = bundle.entries.get(photo.imageFile);
+    if (!entry) return null;
+    const mime = photo.imageMime || 'application/octet-stream';
+    const blob = await entry.getData(new BlobWriter(mime));
+    photo.imageId = await imageStore.putBlob(blob);
+    return photo.imageId;
+  })();
+  _lazyExtractionPending.set(photo, promise);
+  try { return await promise; }
+  finally { _lazyExtractionPending.delete(photo); }
+}
+
+async function _closeSiteZipSource(siteId) {
+  const bundle = siteZipSources.get(siteId);
+  if (!bundle) return;
+  siteZipSources.delete(siteId);
+  try { await bundle.reader.close(); } catch { /* swallow */ }
+}
 let pannellumViewer  = null;
 const plan = { img: null, scale: 1, offsetX: 0, offsetY: 0, dragging: false };
 
@@ -112,6 +142,17 @@ function countSiteImages(site) {
   }
   for (const pt of site.points || []) {
     for (const ph of pt.photos || []) if (ph.imageId || ph.imageFile || ph.dataURL) n++;
+  }
+  return n;
+}
+
+// Photos en lazy load → seules les images de plans participent au progress.
+function countEagerImages(site) {
+  let n = 0;
+  if (site.illustrationId || site.illustrationFile || (typeof site.illustration === 'string' && site.illustration.startsWith('data:'))) n++;
+  for (const sp of site.sitePlans || []) if (sp.imageId || sp.imageFile || sp.imageDataURL) n++;
+  for (const bld of site.buildings || []) {
+    for (const fl of bld.floors || []) if (fl.imageId || fl.imageFile || fl.imageDataURL) n++;
   }
   return n;
 }
@@ -210,6 +251,8 @@ async function loadSiteFromFile(file) {
 // ArrayBuffer de V8 — voir app.js pour les détails.
 async function _loadSiteFromZip(file) {
   const reader = new ZipReader(new BlobReader(file));
+  let success = false;
+  let registeredSiteId = null;
   try {
     const entries = await reader.getEntries();
     const metaEntry = entries.find(e => e.filename === 'metadata.json');
@@ -224,18 +267,24 @@ async function _loadSiteFromZip(file) {
     for (const e of entries) {
       if (e.filename.startsWith('images/')) imageEntries.set(e.filename.slice(7), e);
     }
-    const total = countSiteImages(data);
+    const total = countEagerImages(data);
     progress.show(`Chargement de « ${data.name || 'le site'} »…`, total);
     try {
       await _normalizeZipSite(data, imageEntries, cur => progress.update(cur));
     } finally {
       progress.hide();
     }
+    if (data.id && siteZipSources.has(data.id)) await _closeSiteZipSource(data.id);
+    if (data.id) {
+      siteZipSources.set(data.id, { reader, entries: imageEntries });
+      registeredSiteId = data.id;
+    }
+    success = true;
     return data;
   } catch (e) {
     throw new Error('Fichier .cado ZIP invalide : ' + e.message);
   } finally {
-    await reader.close();
+    if (!success || !registeredSiteId) await reader.close();
   }
 }
 
@@ -282,18 +331,22 @@ async function _normalizeZipSite(data, imageEntries, onProgress = () => {}) {
     if (buffer.length >= BATCH_SIZE) await flush();
   };
 
+  // Eager : illustration + plans (navigation). Photos en lazy load.
   if (data.illustrationFile) await enqueue(data, 'illustrationFile', 'illustrationMime', 'illustrationId');
   for (const sp of data.sitePlans) await enqueue(sp, 'imageFile', 'imageMime', 'imageId');
   for (const bld of data.buildings) {
     bld.floors = bld.floors || [];
     for (const fl of bld.floors) await enqueue(fl, 'imageFile', 'imageMime', 'imageId');
   }
+  await flush();
+
   for (const pt of data.points) {
     if (pt.bearing == null) pt.bearing = 0;
     pt.photos = pt.photos || [];
-    for (const ph of pt.photos) await enqueue(ph, 'imageFile', 'imageMime', 'imageId');
+    for (const ph of pt.photos) {
+      if (ph.imageFile && !ph.imageFilename) ph.imageFilename = ph.imageFile;
+    }
   }
-  await flush();
 }
 
 const _CT_MIME_EXT = { 'image/jpeg':'jpg','image/jpg':'jpg','image/png':'png','image/webp':'webp','image/gif':'gif','image/bmp':'bmp' };
@@ -802,6 +855,8 @@ async function _renderViewerPhoto(point, photo) {
   document.getElementById('panorama-viewer').classList.add('hidden');
   if (pannellumViewer) { pannellumViewer.destroy(); pannellumViewer = null; }
 
+  // Lazy : extrait la photo de la source ZIP si pas encore en IDB.
+  await _ensurePhotoImageId(photo, state.activeSiteId);
   const url = photo.imageId ? await imageStore.getURL(photo.imageId) : '';
 
   if (point.type === '360') {
@@ -914,6 +969,8 @@ function _doCloseSite() {
   if (accessArrowMarker) { accessArrowMarker.remove(); accessArrowMarker = null; }
 
   state.sites = state.sites.filter(s => s.id !== siteId);
+
+  _closeSiteZipSource(siteId);
 
   closeViewer();
   renderSidebar();
