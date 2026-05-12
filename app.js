@@ -13,6 +13,7 @@ import * as imageStore from './imageStore.js';
 import * as progress from './progress.js';
 import { initViewerSplitter, showResizer, hideResizer } from './splitter.js';
 import * as fflate from 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js';
+import { ZipReader, BlobReader, BlobWriter, TextWriter } from 'https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.7.55/+esm';
 
 // ===== CACHE (IndexedDB — pas de limite de taille) =====
 const DB_STORE = imageStore.STORE_STATE_NAME;
@@ -956,33 +957,48 @@ async function loadSiteFromFile(file) {
   }
 }
 
+// Lecture streaming via zip.js : pas de file.arrayBuffer(), donc pas de limite
+// d'allocation ArrayBuffer (~2 GiB sous V8). zip.js lit le central dir en
+// fin de fichier via Blob.slice() puis extrait chaque entrée à la demande.
 async function _loadSiteFromZip(file) {
-  const uint8 = new Uint8Array(await file.arrayBuffer());
-  let zipFiles;
-  try { zipFiles = fflate.unzipSync(uint8); }
-  catch (e) { throw new Error('Fichier .cado ZIP invalide : ' + e.message); }
-
-  if (!zipFiles['metadata.json']) throw new Error('metadata.json manquant dans le fichier .cado');
-  const data = JSON.parse(new TextDecoder().decode(zipFiles['metadata.json']));
-  delete zipFiles['metadata.json'];
-
-  if (!Array.isArray(data.points)) {
-    alert('Fichier .cado ZIP au format obsolète.\nCe fichier ne peut pas être ouvert avec cette version.');
-    return null;
-  }
-
-  const total = countSiteImages(data);
-  progress.show(`Chargement de « ${data.name || 'le site'} »…`, total);
+  const reader = new ZipReader(new BlobReader(file));
   try {
-    await _normalizeZipSite(data, zipFiles, cur => progress.update(cur));
+    const entries = await reader.getEntries();
+    const metaEntry = entries.find(e => e.filename === 'metadata.json');
+    if (!metaEntry) throw new Error('metadata.json manquant dans le fichier .cado');
+    const metaText = await metaEntry.getData(new TextWriter());
+    const data = JSON.parse(metaText);
+
+    if (!Array.isArray(data.points)) {
+      alert('Fichier .cado ZIP au format obsolète.\nCe fichier ne peut pas être ouvert avec cette version.');
+      return null;
+    }
+
+    // Index des entrées images/* par nom relatif (sans le préfixe "images/")
+    const imageEntries = new Map();
+    for (const e of entries) {
+      if (e.filename.startsWith('images/')) imageEntries.set(e.filename.slice(7), e);
+    }
+
+    const total = countSiteImages(data);
+    progress.show(`Chargement de « ${data.name || 'le site'} »…`, total);
+    try {
+      await _normalizeZipSite(data, imageEntries, cur => progress.update(cur));
+    } finally {
+      progress.hide();
+    }
+    return data;
+  } catch (e) {
+    throw new Error('Fichier .cado ZIP invalide : ' + e.message);
   } finally {
-    progress.hide();
+    await reader.close();
   }
-  return data;
 }
 
-// Migre les références imageFile du format ZIP vers des Blobs IndexedDB (même rôle que normalizeSite).
-async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
+// Migre les références imageFile du format ZIP vers des Blobs IndexedDB.
+// imageEntries: Map<filename, zip.js Entry> — chaque entry est lue à la demande
+// via entry.getData(BlobWriter) → un seul Blob est en mémoire à la fois (par batch).
+async function _normalizeZipSite(data, imageEntries, onProgress = () => {}) {
   data.address     = data.address     || '';
   data.contacts    = data.contacts    || [];
   data.icon        = data.icon        || 'landmark';
@@ -1014,11 +1030,13 @@ async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
   const enqueue = async (obj, fileKey, mimeKey, idKey) => {
     const imageFile = obj[fileKey];
     if (!imageFile) return;
-    const zipKey = `images/${imageFile}`;
-    const arr = zipFiles[zipKey];
-    if (!arr) return;
-    const blob = new Blob([arr], { type: obj[mimeKey] || 'application/octet-stream' });
-    delete zipFiles[zipKey]; // libère le Uint8Array dès le Blob créé
+    const entry = imageEntries.get(imageFile);
+    if (!entry) return;
+    const mime = obj[mimeKey] || 'application/octet-stream';
+    // zip.js extrait l'entrée directement en Blob (streaming) sans passer par
+    // un Uint8Array intermédiaire en JS heap.
+    const blob = await entry.getData(new BlobWriter(mime));
+    imageEntries.delete(imageFile); // entry traitée, libère la référence
     const filenameKey = idKey.replace(/Id$/, 'Filename');
     obj[filenameKey] = imageFile;
     delete obj[fileKey]; delete obj[mimeKey];

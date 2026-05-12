@@ -12,6 +12,7 @@ import { renderIcon } from './icons.js';
 import * as progress from './progress.js';
 import { initViewerSplitter, showResizer, hideResizer } from './splitter.js';
 import * as fflate from 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js';
+import { ZipReader, BlobReader, BlobWriter, TextWriter } from 'https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.7.55/+esm';
 
 // ===== STATE =====
 const state = {
@@ -205,32 +206,40 @@ async function loadSiteFromFile(file) {
   }
 }
 
+// Lecture streaming via zip.js : évite la limite ~2 GiB d'allocation
+// ArrayBuffer de V8 — voir app.js pour les détails.
 async function _loadSiteFromZip(file) {
-  let zipFiles;
+  const reader = new ZipReader(new BlobReader(file));
   try {
-    const uint8 = new Uint8Array(await file.arrayBuffer());
-    zipFiles = fflate.unzipSync(uint8);
+    const entries = await reader.getEntries();
+    const metaEntry = entries.find(e => e.filename === 'metadata.json');
+    if (!metaEntry) throw new Error('metadata.json manquant dans le fichier .cado');
+    const metaText = await metaEntry.getData(new TextWriter());
+    const data = JSON.parse(metaText);
+    if (!Array.isArray(data.points)) {
+      alert('Fichier .cado au format obsolète. Recréez-le avec la nouvelle version de CadoCreator.');
+      return null;
+    }
+    const imageEntries = new Map();
+    for (const e of entries) {
+      if (e.filename.startsWith('images/')) imageEntries.set(e.filename.slice(7), e);
+    }
+    const total = countSiteImages(data);
+    progress.show(`Chargement de « ${data.name || 'le site'} »…`, total);
+    try {
+      await _normalizeZipSite(data, imageEntries, cur => progress.update(cur));
+    } finally {
+      progress.hide();
+    }
+    return data;
   } catch (e) {
     throw new Error('Fichier .cado ZIP invalide : ' + e.message);
-  }
-  if (!zipFiles['metadata.json']) throw new Error('metadata.json manquant dans le fichier .cado');
-  const data = JSON.parse(new TextDecoder().decode(zipFiles['metadata.json']));
-  delete zipFiles['metadata.json'];
-  if (!Array.isArray(data.points)) {
-    alert('Fichier .cado au format obsolète. Recréez-le avec la nouvelle version de CadoCreator.');
-    return null;
-  }
-  const total = countSiteImages(data);
-  progress.show(`Chargement de « ${data.name || 'le site'} »…`, total);
-  try {
-    await _normalizeZipSite(data, zipFiles, cur => progress.update(cur));
   } finally {
-    progress.hide();
+    await reader.close();
   }
-  return data;
 }
 
-async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
+async function _normalizeZipSite(data, imageEntries, onProgress = () => {}) {
   data.address     = data.address     || '';
   data.contacts    = data.contacts    || [];
   data.icon        = data.icon        || 'landmark';
@@ -261,11 +270,11 @@ async function _normalizeZipSite(data, zipFiles, onProgress = () => {}) {
   const enqueue = async (obj, fileKey, mimeKey, idKey) => {
     const imageFile = obj[fileKey];
     if (!imageFile) return;
-    const zipKey = `images/${imageFile}`;
-    const arr = zipFiles[zipKey];
-    if (!arr) return;
-    const blob = new Blob([arr], { type: obj[mimeKey] || 'application/octet-stream' });
-    delete zipFiles[zipKey];
+    const entry = imageEntries.get(imageFile);
+    if (!entry) return;
+    const mime = obj[mimeKey] || 'application/octet-stream';
+    const blob = await entry.getData(new BlobWriter(mime));
+    imageEntries.delete(imageFile);
     const filenameKey = idKey.replace(/Id$/, 'Filename');
     obj[filenameKey] = imageFile;
     delete obj[fileKey]; delete obj[mimeKey];
