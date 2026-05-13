@@ -128,18 +128,18 @@ export function planShapeToSvgG(shape, plan) {
     line.setAttribute('stroke-linecap', 'round');
     applyDash(line);
     g.appendChild(line);
-    const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
     const len = 8 + sw * 2;
-    const ax1 = p2.x - len * Math.cos(angle - Math.PI / 6);
-    const ay1 = p2.y - len * Math.sin(angle - Math.PI / 6);
-    const ax2 = p2.x - len * Math.cos(angle + Math.PI / 6);
-    const ay2 = p2.y - len * Math.sin(angle + Math.PI / 6);
-    const head = S('polygon');
-    head.setAttribute('points', `${p2.x},${p2.y} ${ax1},${ay1} ${ax2},${ay2}`);
-    head.setAttribute('fill', shape.color || '#e63946');
-    head.setAttribute('stroke', shape.color || '#e63946');
-    head.setAttribute('stroke-linejoin', 'round');
-    g.appendChild(head);
+    const addHead = (tip, from) => {
+      const a = Math.atan2(tip.y - from.y, tip.x - from.x);
+      const head = S('polygon');
+      head.setAttribute('points', `${tip.x},${tip.y} ${tip.x - len * Math.cos(a - Math.PI/6)},${tip.y - len * Math.sin(a - Math.PI/6)} ${tip.x - len * Math.cos(a + Math.PI/6)},${tip.y - len * Math.sin(a + Math.PI/6)}`);
+      head.setAttribute('fill', shape.color || '#e63946');
+      head.setAttribute('stroke', shape.color || '#e63946');
+      head.setAttribute('stroke-linejoin', 'round');
+      g.appendChild(head);
+    };
+    addHead(p2, p1);
+    if (shape.doubleArrow) addHead(pts[0], pts[1]);
   } else if (shape.type === 'circle' && pts.length >= 2) {
     const r = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
     const el = S('circle');

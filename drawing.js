@@ -46,6 +46,7 @@ export function initDrawing(deps) {
   let strokeWidth        = 2;
   let fontSize           = 14;
   let dashed             = false;
+  let doubleArrow        = false;
   let outlineColor       = '#000000';
   let textOutline        = 2;
   let planDrawing        = false;
@@ -247,14 +248,16 @@ export function initDrawing(deps) {
       btn.classList.toggle('active', isCurrentTool || isSelectedShapeType);
     });
 
-    const isLine = displayType ? LINE_TOOLS.has(displayType) : false;
-    const isText = displayType === 'text';
+    const isLine  = displayType ? LINE_TOOLS.has(displayType) : false;
+    const isText  = displayType === 'text';
+    const isArrow = displayType === 'arrow';
 
     const source = selShape && tool === 'select' ? selShape : null;
     const c   = source ? (source.color        || '#e63946')  : color;
     const sw  = source ? (source.strokeWidth   ?? 2)          : strokeWidth;
     const fs  = source ? (source.fontSize      || 14)         : fontSize;
     const ds  = source ? !!source.dashed                      : dashed;
+    const da  = source ? !!source.doubleArrow                 : doubleArrow;
     const ow  = source ? (source.strokeWidth   ?? 2)          : textOutline;
     const oc  = source ? (source.outlineColor  || '#000000')  : outlineColor;
 
@@ -263,13 +266,15 @@ export function initDrawing(deps) {
     document.getElementById('drawing-text-outline').value  = ow;
     document.getElementById('drawing-outline-color').value = oc;
     document.getElementById('btn-drawing-dashed').classList.toggle('active', ds);
+    document.getElementById('btn-drawing-double-arrow').classList.toggle('active', da);
     document.getElementById('drawing-font-size').value = fs;
 
-    document.getElementById('drawing-stroke-width').classList.toggle('hidden',  !isLine);
-    document.getElementById('btn-drawing-dashed').classList.toggle('hidden',    !isLine);
-    document.getElementById('drawing-font-size').classList.toggle('hidden',     !isText);
-    document.getElementById('drawing-text-outline').classList.toggle('hidden',  !isText);
-    document.getElementById('drawing-outline-color').classList.toggle('hidden', !isText);
+    document.getElementById('drawing-stroke-width').classList.toggle('hidden',       !isLine);
+    document.getElementById('btn-drawing-dashed').classList.toggle('hidden',         !isLine);
+    document.getElementById('btn-drawing-double-arrow').classList.toggle('hidden',   !isArrow);
+    document.getElementById('drawing-font-size').classList.toggle('hidden',          !isText);
+    document.getElementById('drawing-text-outline').classList.toggle('hidden',       !isText);
+    document.getElementById('drawing-outline-color').classList.toggle('hidden',      !isText);
 
     const hasSel = !!(planSelShapeId || mapSelShapeId);
     const hasSelText = hasSel && isText;
@@ -416,13 +421,15 @@ export function initDrawing(deps) {
       h.style.pointerEvents = 'all';
       h.style.cursor = 'move';
       h.addEventListener('mousedown', e => { e.stopPropagation(); _startPlanHandleDrag(shape, i, e.clientX, e.clientY); });
-      h.addEventListener('contextmenu', e => {
+      const removeVertex = e => {
         e.preventDefault(); e.stopPropagation();
         if (!canRemove) return;
         shape.points.splice(i, 1);
         onRefreshPlan();
         onSave();
-      });
+      };
+      h.addEventListener('contextmenu', removeVertex);
+      h.addEventListener('dblclick',    removeVertex);
       hg.appendChild(h);
     });
 
@@ -610,6 +617,7 @@ export function initDrawing(deps) {
     if (!layer) { cancelPlanDrawing(); return; }
     const shape = { id: uid(), type: tool, color, strokeWidth, dashed, points: pts };
     if (tool === 'polygon' || tool === 'circle') shape.fillOpacity = 0.15;
+    if (tool === 'arrow') shape.doubleArrow = doubleArrow;
     layer.shapes.push(shape);
     planDrawing = false;
     planPoints = [];
@@ -749,17 +757,20 @@ export function initDrawing(deps) {
       c.beginPath();
       pts.forEach((p, i) => i === 0 ? c.moveTo(p.x, p.y) : c.lineTo(p.x, p.y));
       c.stroke();
-      const p1 = pts[pts.length - 2], p2 = pts[pts.length - 1];
-      const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
       const len = 8 + sw * 2;
-      c.setLineDash([]);
-      c.beginPath();
-      c.moveTo(p2.x, p2.y);
-      c.lineTo(p2.x - len * Math.cos(angle - Math.PI / 6), p2.y - len * Math.sin(angle - Math.PI / 6));
-      c.lineTo(p2.x - len * Math.cos(angle + Math.PI / 6), p2.y - len * Math.sin(angle + Math.PI / 6));
-      c.closePath();
-      c.fillStyle = col;
-      c.fill();
+      const drawHead = (tip, from) => {
+        const a = Math.atan2(tip.y - from.y, tip.x - from.x);
+        c.setLineDash([]);
+        c.beginPath();
+        c.moveTo(tip.x, tip.y);
+        c.lineTo(tip.x - len * Math.cos(a - Math.PI/6), tip.y - len * Math.sin(a - Math.PI/6));
+        c.lineTo(tip.x - len * Math.cos(a + Math.PI/6), tip.y - len * Math.sin(a + Math.PI/6));
+        c.closePath();
+        c.fillStyle = col;
+        c.fill();
+      };
+      drawHead(pts[pts.length - 1], pts[pts.length - 2]);
+      if (shape.doubleArrow) drawHead(pts[0], pts[1]);
     } else if (shape.type === 'text' && pts.length >= 1) {
       const fs  = shape.fontSize || 14;
       const ow  = shape.strokeWidth ?? 2;
@@ -877,12 +888,15 @@ export function initDrawing(deps) {
     });
     document.getElementById('btn-drawing-dashed').addEventListener('click', () => {
       const s = _getSelectedShape();
-      if (s) {
-        s.dashed = !s.dashed;
-        dashed = s.dashed;
-      } else {
-        dashed = !dashed;
-      }
+      if (s) { s.dashed = !s.dashed; dashed = s.dashed; }
+      else    { dashed = !dashed; }
+      _refresh(); onSave();
+      _updateToolbarState();
+    });
+    document.getElementById('btn-drawing-double-arrow').addEventListener('click', () => {
+      const s = _getSelectedShape();
+      if (s) { s.doubleArrow = !s.doubleArrow; doubleArrow = s.doubleArrow; }
+      else    { doubleArrow = !doubleArrow; }
       _refresh(); onSave();
       _updateToolbarState();
     });
@@ -980,19 +994,22 @@ export function initDrawing(deps) {
   function _addMapArrow(shape, lg, layerId) {
     const map = getMap();
     const ll = shape.points.map(p => [p.lat, p.lon]);
+    const col = escapeAttr(shape.color || '#e63946');
     L.polyline(ll, { color: shape.color || '#e63946', weight: shape.strokeWidth || 2, interactive: false }).addTo(lg);
-    const p1 = map.latLngToLayerPoint(ll[ll.length - 2]);
-    const p2 = map.latLngToLayerPoint(ll[ll.length - 1]);
-    const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
-    const arrowSvg = `<svg width="24" height="24" viewBox="-12 -12 24 24" style="transform:rotate(${angle}deg);overflow:visible">
-      <polygon points="12,0 -5,-6 -5,6" fill="${escapeAttr(shape.color || '#e63946')}" stroke="none"/>
-    </svg>`;
-    L.marker(ll[ll.length - 1], {
-      icon: L.divIcon({ className: '', html: arrowSvg, iconSize: [24, 24], iconAnchor: [12, 12] }),
-      interactive: true,
-    }).on('click', () => {
-      if (tool === 'select' && activeLayerId) _selectMapShape(shape.id, layerId);
-    }).addTo(lg);
+    const _arrowMarker = (tip, from) => {
+      const p1 = map.latLngToLayerPoint(from);
+      const p2 = map.latLngToLayerPoint(tip);
+      const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
+      const svg = `<svg width="24" height="24" viewBox="-12 -12 24 24" style="transform:rotate(${angle}deg);overflow:visible"><polygon points="12,0 -5,-6 -5,6" fill="${col}" stroke="none"/></svg>`;
+      L.marker(tip, {
+        icon: L.divIcon({ className: '', html: svg, iconSize: [24, 24], iconAnchor: [12, 12] }),
+        interactive: true,
+      }).on('click', () => {
+        if (tool === 'select' && activeLayerId) _selectMapShape(shape.id, layerId);
+      }).addTo(lg);
+    };
+    _arrowMarker(ll[ll.length - 1], ll[ll.length - 2]);
+    if (shape.doubleArrow) _arrowMarker(ll[0], ll[1]);
   }
 
   // ===== MAP: SHAPE SELECTION =====
@@ -1052,7 +1069,7 @@ export function initDrawing(deps) {
         if (lg) { lg.clearLayers(); layer.shapes.forEach(s => _addMapShape(s, lg, layerId)); }
       });
       m.on('dragend', () => onSave());
-      m.on('contextmenu', () => {
+      const removeMapVertex = () => {
         if (!canRemove) return;
         shape.points.splice(i, 1);
         _clearMapHandles();
@@ -1060,7 +1077,9 @@ export function initDrawing(deps) {
         if (lg) { lg.clearLayers(); layer.shapes.forEach(s => _addMapShape(s, lg, layerId)); }
         _selectMapShape(shapeId, layerId);
         onSave();
-      });
+      };
+      m.on('contextmenu', removeMapVertex);
+      m.on('dblclick', e => { L.DomEvent.stopPropagation(e); removeMapVertex(); });
       mapHandleMarkers.push(m);
     });
   }
@@ -1175,6 +1194,7 @@ export function initDrawing(deps) {
     if (!layer) { cancelMapDrawing(); return; }
     const shape = { id: uid(), type: mapCurrentTool, color, strokeWidth, dashed, points: pts };
     if (mapCurrentTool === 'polygon' || mapCurrentTool === 'circle') shape.fillOpacity = 0.15;
+    if (mapCurrentTool === 'arrow') shape.doubleArrow = doubleArrow;
     layer.shapes.push(shape);
     _cleanupMapDrawing();
     renderMapLayers();

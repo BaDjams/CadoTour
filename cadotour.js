@@ -568,19 +568,22 @@ function renderMapDrawingLayersReadOnly() {
           dashArray,
           interactive: false,
         }).addTo(lg);
-        const p1 = map.latLngToLayerPoint(shape.points[shape.points.length - 2]);
-        const p2 = map.latLngToLayerPoint(shape.points[shape.points.length - 1]);
-        const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI + 90;
-        const tip = shape.points[shape.points.length - 1];
+        const col = shape.color || '#e63946';
         const sz = 8 + sw * 2;
-        const arrowSvg = `<svg width="${sz*2}" height="${sz*2}" viewBox="-${sz} -${sz} ${sz*2} ${sz*2}" style="transform:rotate(${angle}deg)">
-          <polygon points="0,${-sz} ${sz*0.6},${sz*0.4} 0,0 ${-sz*0.6},${sz*0.4}"
-            fill="${shape.color || '#e63946'}" stroke="${shape.color || '#e63946'}" stroke-linejoin="round"/>
-        </svg>`;
-        L.marker([tip.lat, tip.lon], {
-          icon: L.divIcon({ className: '', html: arrowSvg, iconSize: [sz*2, sz*2], iconAnchor: [sz, sz] }),
-          interactive: false,
-        }).addTo(lg);
+        const _addHead = (tip, from) => {
+          const lp1 = map.latLngToLayerPoint(from);
+          const lp2 = map.latLngToLayerPoint(tip);
+          const angle = Math.atan2(lp2.y - lp1.y, lp2.x - lp1.x) * 180 / Math.PI + 90;
+          const svg = `<svg width="${sz*2}" height="${sz*2}" viewBox="-${sz} -${sz} ${sz*2} ${sz*2}" style="transform:rotate(${angle}deg)">
+            <polygon points="0,${-sz} ${sz*0.6},${sz*0.4} 0,0 ${-sz*0.6},${sz*0.4}" fill="${col}" stroke="${col}" stroke-linejoin="round"/>
+          </svg>`;
+          L.marker(tip, {
+            icon: L.divIcon({ className: '', html: svg, iconSize: [sz*2, sz*2], iconAnchor: [sz, sz] }),
+            interactive: false,
+          }).addTo(lg);
+        };
+        _addHead(pts[pts.length - 1], pts[pts.length - 2]);
+        if (shape.doubleArrow) _addHead(pts[0], pts[1]);
       } else if (shape.type === 'text' && shape.points?.length >= 1) {
         const pt = shape.points[0];
         const fs = shape.fontSize || 14;
