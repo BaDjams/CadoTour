@@ -6,6 +6,8 @@ import {
   drawPlanCanvas as _drawPlanCanvas,
   getActivePlan as _getActivePlan,
   updateGalleryNav as _updateGalleryNav,
+  hexToRgba as _hexToRgba,
+  renderPlanDrawingLayersSvg as _renderPlanDrawingLayersSvg,
 } from './shared.js';
 import * as imageStore from './imageStore.js';
 import { renderIcon } from './icons.js';
@@ -510,6 +512,114 @@ function renderAccessArrow(site) {
   }).addTo(map);
 }
 
+// ===== MAP DRAWING LAYERS (READ-ONLY) =====
+let mapDrawingLayerGroups = {}; // layerId → L.layerGroup
+
+function renderMapDrawingLayersReadOnly() {
+  // Remove previous groups
+  Object.values(mapDrawingLayerGroups).forEach(lg => { if (map.hasLayer(lg)) lg.remove(); });
+  mapDrawingLayerGroups = {};
+
+  const site = getActiveSite();
+  if (!site || !map) return;
+
+  // Bottom layer first, top layer last (addTo map = higher z in Leaflet)
+  for (const layer of [...(site.mapDrawingLayers || [])].reverse()) {
+    if (!layer.visible) continue;
+    const lg = L.layerGroup().addTo(map);
+    mapDrawingLayerGroups[layer.id] = lg;
+    const da = w => layer.shapes.some(s => s.dashed) ? `${w * 4} ${w * 2}` : null; // per-shape below
+
+    for (const shape of (layer.shapes || [])) {
+      const sw = shape.strokeWidth || 2;
+      const dashArray = shape.dashed ? `${sw * 4} ${sw * 2}` : null;
+      if (shape.type === 'polygon' && shape.points?.length >= 2) {
+        const pts = shape.points.map(p => [p.lat, p.lon]);
+        L.polygon(pts, {
+          color: shape.color || '#e63946',
+          fillColor: shape.color || '#e63946',
+          fillOpacity: shape.fillOpacity ?? 0.15,
+          weight: sw, dashArray, interactive: false,
+        }).addTo(lg);
+      } else if (shape.type === 'circle' && shape.points?.length >= 2) {
+        const center = [shape.points[0].lat, shape.points[0].lon];
+        const edge   = [shape.points[1].lat, shape.points[1].lon];
+        const radius = L.latLng(center).distanceTo(edge);
+        L.circle(center, {
+          radius,
+          color: shape.color || '#e63946',
+          fillColor: shape.color || '#e63946',
+          fillOpacity: shape.fillOpacity ?? 0.15,
+          weight: sw, dashArray, interactive: false,
+        }).addTo(lg);
+      } else if (shape.type === 'polyline' && shape.points?.length >= 2) {
+        const pts = shape.points.map(p => [p.lat, p.lon]);
+        L.polyline(pts, {
+          color: shape.color || '#e63946',
+          weight: sw,
+          dashArray,
+          interactive: false,
+        }).addTo(lg);
+      } else if (shape.type === 'arrow' && shape.points?.length >= 2) {
+        const pts = shape.points.map(p => [p.lat, p.lon]);
+        L.polyline(pts, {
+          color: shape.color || '#e63946',
+          weight: sw,
+          dashArray,
+          interactive: false,
+        }).addTo(lg);
+        const p1 = map.latLngToLayerPoint(shape.points[shape.points.length - 2]);
+        const p2 = map.latLngToLayerPoint(shape.points[shape.points.length - 1]);
+        const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI + 90;
+        const tip = shape.points[shape.points.length - 1];
+        const sz = 8 + sw * 2;
+        const arrowSvg = `<svg width="${sz*2}" height="${sz*2}" viewBox="-${sz} -${sz} ${sz*2} ${sz*2}" style="transform:rotate(${angle}deg)">
+          <polygon points="0,${-sz} ${sz*0.6},${sz*0.4} 0,0 ${-sz*0.6},${sz*0.4}"
+            fill="${shape.color || '#e63946'}" stroke="${shape.color || '#e63946'}" stroke-linejoin="round"/>
+        </svg>`;
+        L.marker([tip.lat, tip.lon], {
+          icon: L.divIcon({ className: '', html: arrowSvg, iconSize: [sz*2, sz*2], iconAnchor: [sz, sz] }),
+          interactive: false,
+        }).addTo(lg);
+      } else if (shape.type === 'text' && shape.points?.length >= 1) {
+        const pt = shape.points[0];
+        const fs = shape.fontSize || 14;
+        const ow = shape.strokeWidth ?? 2;
+        const oc = shape.outlineColor || '#000000';
+        const shadow = `0 0 ${ow * 1.5}px ${oc}, 0 0 ${ow * 3}px ${oc}`;
+        const html = `<div class="map-drawing-text" style="color:${shape.color||'#e63946'};font-size:${fs}px;text-shadow:${shadow}">${escapeHtml(shape.text || '')}</div>`;
+        L.marker([pt.lat, pt.lon], {
+          icon: L.divIcon({ className: '', html, iconSize: null, iconAnchor: [0, 0] }),
+          interactive: false,
+        }).addTo(lg);
+      }
+    }
+  }
+}
+
+function clearMapDrawingLayersReadOnly() {
+  Object.values(mapDrawingLayerGroups).forEach(lg => { if (map?.hasLayer(lg)) lg.remove(); });
+  mapDrawingLayerGroups = {};
+}
+
+// ===== PLAN DRAWING LAYERS (READ-ONLY) =====
+function renderPlanDrawingLayersReadOnly(svg) {
+  const site = getActiveSite();
+  if (!site) return;
+
+  let layers = null;
+  if (state.activeSitePlanId) {
+    const sp = site.sitePlans?.find(s => s.id === state.activeSitePlanId);
+    layers = sp?.drawingLayers;
+  } else if (state.activeBuildingId && state.activeFloorId) {
+    const bld   = site.buildings?.find(b => b.id === state.activeBuildingId);
+    const floor = bld?.floors?.find(f => f.id === state.activeFloorId);
+    layers = floor?.drawingLayers;
+  }
+
+  if (layers) _renderPlanDrawingLayersSvg(layers, plan, svg);
+}
+
 // ===== SITE SELECTION =====
 function selectSite(siteId) {
   const prev = state.activeSiteId;
@@ -525,6 +635,7 @@ function selectSite(siteId) {
 
   clearBuildingMarkers();
   clearPointMarkers();
+  clearMapDrawingLayersReadOnly();
 
   const site = getActiveSite();
   if (site) {
@@ -534,6 +645,7 @@ function selectSite(siteId) {
       .forEach(pt => addPointMarker(pt));
     if (site.perimeter)   renderSitePerimeter(site);
     if (site.accessArrow) renderAccessArrow(site);
+    renderMapDrawingLayersReadOnly();
     map.flyTo([site.lat, site.lon], Math.max(map.getZoom(), 17));
   }
 
@@ -797,6 +909,8 @@ function renderPlanMarkers() {
     g.addEventListener('click', () => openViewer(point.id));
     svg.appendChild(g);
   });
+
+  renderPlanDrawingLayersReadOnly(svg);
 }
 
 function initPlanEvents() {
@@ -964,6 +1078,7 @@ function _doCloseSite() {
 
   clearBuildingMarkers();
   clearPointMarkers();
+  clearMapDrawingLayersReadOnly();
   if (siteMarkers[siteId]) { siteMarkers[siteId].remove(); delete siteMarkers[siteId]; }
   if (perimeterLayer)    { perimeterLayer.remove();    perimeterLayer    = null; }
   if (accessArrowMarker) { accessArrowMarker.remove(); accessArrowMarker = null; }

@@ -77,3 +77,118 @@ export function updateGalleryNav(gallery, idx) {
   count.classList.toggle('hidden', !multi);
   if (multi) count.textContent = `${idx + 1} / ${gallery.length}`;
 }
+
+// ===== DRAWING HELPERS =====
+
+export function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16) || 0;
+  const g = parseInt(hex.slice(3, 5), 16) || 0;
+  const b = parseInt(hex.slice(5, 7), 16) || 0;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+export function planShapeToSvgG(shape, plan) {
+  if (!shape.points?.length) return null;
+  const pts = shape.points.map(p => ({
+    x: p.x * plan.scale + plan.offsetX,
+    y: p.y * plan.scale + plan.offsetY,
+  }));
+  const sw = shape.strokeWidth || 2;
+  const dash = shape.dashed ? `${sw * 4},${sw * 2}` : null;
+  const S = tag => document.createElementNS('http://www.w3.org/2000/svg', tag);
+  const applyDash = el => { if (dash) el.setAttribute('stroke-dasharray', dash); };
+  const g = S('g');
+
+  if (shape.type === 'polygon' && pts.length >= 2) {
+    const el = S('polygon');
+    el.setAttribute('points', pts.map(p => `${p.x},${p.y}`).join(' '));
+    el.setAttribute('fill', hexToRgba(shape.color || '#e63946', shape.fillOpacity ?? 0.15));
+    el.setAttribute('stroke', shape.color || '#e63946');
+    el.setAttribute('stroke-width', sw);
+    el.setAttribute('stroke-linejoin', 'round');
+    applyDash(el);
+    g.appendChild(el);
+  } else if (shape.type === 'polyline' && pts.length >= 2) {
+    const el = S('polyline');
+    el.setAttribute('points', pts.map(p => `${p.x},${p.y}`).join(' '));
+    el.setAttribute('fill', 'none');
+    el.setAttribute('stroke', shape.color || '#e63946');
+    el.setAttribute('stroke-width', sw);
+    el.setAttribute('stroke-linejoin', 'round');
+    el.setAttribute('stroke-linecap', 'round');
+    applyDash(el);
+    g.appendChild(el);
+  } else if (shape.type === 'arrow' && pts.length >= 2) {
+    const p1 = pts[pts.length - 2], p2 = pts[pts.length - 1];
+    const line = S('polyline');
+    line.setAttribute('points', pts.map(p => `${p.x},${p.y}`).join(' '));
+    line.setAttribute('fill', 'none');
+    line.setAttribute('stroke', shape.color || '#e63946');
+    line.setAttribute('stroke-width', sw);
+    line.setAttribute('stroke-linecap', 'round');
+    applyDash(line);
+    g.appendChild(line);
+    const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+    const len = 8 + sw * 2;
+    const ax1 = p2.x - len * Math.cos(angle - Math.PI / 6);
+    const ay1 = p2.y - len * Math.sin(angle - Math.PI / 6);
+    const ax2 = p2.x - len * Math.cos(angle + Math.PI / 6);
+    const ay2 = p2.y - len * Math.sin(angle + Math.PI / 6);
+    const head = S('polygon');
+    head.setAttribute('points', `${p2.x},${p2.y} ${ax1},${ay1} ${ax2},${ay2}`);
+    head.setAttribute('fill', shape.color || '#e63946');
+    head.setAttribute('stroke', shape.color || '#e63946');
+    head.setAttribute('stroke-linejoin', 'round');
+    g.appendChild(head);
+  } else if (shape.type === 'circle' && pts.length >= 2) {
+    const r = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    const el = S('circle');
+    el.setAttribute('cx', pts[0].x); el.setAttribute('cy', pts[0].y);
+    el.setAttribute('r', r);
+    el.setAttribute('fill', hexToRgba(shape.color || '#e63946', shape.fillOpacity ?? 0.15));
+    el.setAttribute('stroke', shape.color || '#e63946');
+    el.setAttribute('stroke-width', sw);
+    applyDash(el);
+    g.appendChild(el);
+  } else if (shape.type === 'text' && pts.length >= 1) {
+    const fontPx = Math.max(8, (shape.fontSize || 14) * plan.scale);
+    const outlinePx = (shape.strokeWidth ?? 2) * plan.scale;
+    const outlineCol = shape.outlineColor || 'rgba(0,0,0,0.65)';
+    const text = S('text');
+    text.setAttribute('x', pts[0].x);
+    text.setAttribute('y', pts[0].y);
+    text.setAttribute('fill', shape.color || '#e63946');
+    text.setAttribute('font-size', fontPx);
+    text.setAttribute('font-family', 'Segoe UI, system-ui, sans-serif');
+    text.setAttribute('font-weight', '600');
+    text.setAttribute('paint-order', 'stroke fill');
+    text.setAttribute('stroke', outlineCol);
+    text.setAttribute('stroke-width', outlinePx);
+    text.setAttribute('stroke-linejoin', 'round');
+    text.textContent = shape.text || '';
+    g.appendChild(text);
+  } else {
+    return null;
+  }
+
+  return g;
+}
+
+export function renderPlanDrawingLayersSvg(layers, plan, svgRoot, opts = {}) {
+  // Render bottom layer first, top layer last so it paints over the others
+  const ordered = [...(layers || [])].reverse();
+  for (const layer of ordered) {
+    if (!layer.visible) continue;
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('data-layer-id', layer.id);
+    for (const shape of (layer.shapes || [])) {
+      const sg = planShapeToSvgG(shape, plan);
+      if (!sg) continue;
+      sg.setAttribute('data-shape-id', shape.id);
+      sg.setAttribute('data-layer-id', layer.id);
+      if (opts.interactive) sg.style.pointerEvents = 'painted';
+      g.appendChild(sg);
+    }
+    svgRoot.appendChild(g);
+  }
+}

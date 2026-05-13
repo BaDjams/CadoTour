@@ -82,6 +82,7 @@
         <button id="btn-upload-plan" class="btn-secondary btn-sm">Changer le plan</button>
         <input id="input-upload-plan" type="file" accept="image/*" class="hidden" />
         <button id="btn-download-plan" class="btn-secondary btn-sm hidden">Télécharger</button>
+        <button id="btn-download-plan-annotated" class="btn-secondary btn-sm hidden" title="Télécharger le plan avec les calques visibles">Télécharger + calques</button>
       </div>
       <div id="plan-viewport">
         <canvas id="plan-canvas"></canvas>
@@ -91,6 +92,55 @@
 
     <!-- Map context menu (right-click) -->
     <div id="map-context-menu" class="hidden"></div>
+
+    <!-- Drawing layers panel (plan + map) -->
+    <div id="drawing-panel" class="drawing-panel hidden">
+      <button id="drawing-panel-toggle" class="drawing-toggle-btn">✏ Calques ▲</button>
+      <div id="drawing-panel-body" class="drawing-panel-body">
+        <div id="drawing-layers-list" class="drawing-layers-list"></div>
+        <button id="btn-add-drawing-layer" class="drawing-add-layer-btn">+ Calque</button>
+        <div id="drawing-toolbar" class="drawing-toolbar hidden">
+          <div class="draw-tools-row">
+            <button class="draw-tool-btn" data-tool="select" title="Sélectionner / Éditer">↖</button>
+            <button class="draw-tool-btn" data-tool="polygon" title="Polygone (clic×N + dblclic)">□</button>
+            <button class="draw-tool-btn" data-tool="polyline" title="Polyligne (clic×N + dblclic)">〰</button>
+            <button class="draw-tool-btn" data-tool="arrow" title="Flèche (2 clics)">→</button>
+            <button class="draw-tool-btn" data-tool="circle" title="Cercle (2 clics)">○</button>
+            <button class="draw-tool-btn" data-tool="text" title="Texte (1 clic)">T</button>
+          </div>
+          <div class="draw-opts-row">
+            <!-- Always: color -->
+            <input type="color" id="drawing-color" value="#e63946" title="Couleur du trait / texte" />
+            <!-- Line shapes (polygon, polyline, arrow, circle): stroke width + dashed -->
+            <input type="number" id="drawing-stroke-width" value="2" min="1" max="20" class="drawing-stroke-input hidden" title="Épaisseur (px)" />
+            <button id="btn-drawing-dashed" class="draw-tool-btn btn-sm hidden" title="Pointillés">- -</button>
+            <!-- Text: font size (select) + outline width + outline color -->
+            <select id="drawing-font-size" class="drawing-stroke-input hidden" title="Taille de police">
+              <option value="8">8</option><option value="9">9</option><option value="10">10</option>
+              <option value="11">11</option><option value="12">12</option><option value="14" selected>14</option>
+              <option value="16">16</option><option value="18">18</option><option value="20">20</option>
+              <option value="22">22</option><option value="24">24</option><option value="26">26</option>
+              <option value="28">28</option><option value="36">36</option><option value="48">48</option>
+              <option value="60">60</option><option value="72">72</option><option value="96">96</option>
+              <option value="120">120</option><option value="150">150</option>
+            </select>
+            <input type="number" id="drawing-text-outline" value="2" min="0" max="20" class="drawing-stroke-input hidden" title="Épaisseur du contour" />
+            <input type="color" id="drawing-outline-color" value="#000000" class="hidden" title="Couleur du contour" />
+            <button id="btn-edit-text-shape" class="btn-sm hidden" title="Modifier le texte">✏ Texte</button>
+            <button id="btn-delete-selected-shape" class="btn-danger btn-sm hidden" title="Supprimer la forme sélectionnée">🗑</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Text input popover for drawing tool -->
+    <div id="drawing-text-popover" class="drawing-text-popover hidden">
+      <input type="text" id="drawing-text-value" class="input-field" placeholder="Entrez votre texte…" style="font-size:13px" />
+      <div style="display:flex;gap:4px;margin-top:6px">
+        <button id="btn-drawing-text-ok" class="btn-primary btn-sm" style="flex:1">OK</button>
+        <button id="btn-drawing-text-cancel" class="btn-icon btn-sm">✕</button>
+      </div>
+    </div>
 
   </main>
 

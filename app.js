@@ -8,6 +8,7 @@ import {
   getActivePlan as _getActivePlan,
   updateGalleryNav as _updateGalleryNav,
 } from './shared.js';
+import { initDrawing } from './drawing.js';
 import { SITE_ICONS, BUILDING_ICONS, renderIcon } from './icons.js';
 import * as imageStore from './imageStore.js';
 import * as progress from './progress.js';
@@ -114,8 +115,9 @@ async function normalizeSite(data, onProgress = () => {}) {
   data.buildings    = data.buildings    || [];
   data.sitePlans    = data.sitePlans    || [];
   data.points       = data.points       || [];
-  data.perimeter    = data.perimeter    || null;
-  data.accessArrow  = data.accessArrow  || null;
+  data.perimeter         = data.perimeter         || null;
+  data.accessArrow       = data.accessArrow       || null;
+  data.mapDrawingLayers  = data.mapDrawingLayers  || [];
   delete data.photos; // ancien champ — modèle obsolète
   delete data.floors; // ancien champ — modèle obsolète
 
@@ -243,6 +245,9 @@ let orientLine       = null;
 
 // ===== FLOOR PLAN =====
 let plan = { img: null, scale: 1, offsetX: 0, offsetY: 0, dragging: false, dragStart: null };
+
+// ===== DRAWING =====
+let drawing; // initialized in init()
 
 // ===== PANNELLUM =====
 let pannellumViewer = null;
@@ -408,6 +413,7 @@ function onMapClick(e) {
   if (interactionMode === 'orient-point')   { commitOrientPoint(e.latlng);  return; }
   if (interactionMode === 'move-building')  { commitMoveBuilding(e.latlng); return; }
   if (interactionMode === 'move-site')      { commitMoveSite(e.latlng);     return; }
+  if (interactionMode === 'map-drawing')    { drawing.addMapPoint(e.latlng); return; }
   if (interactionMode === 'orient-access-arrow') return;
   hideMapContextMenu();
 }
@@ -1073,8 +1079,9 @@ async function _normalizeZipSite(data, imageEntries, onProgress = () => {}) {
   data.buildings   = data.buildings   || [];
   data.sitePlans   = data.sitePlans   || [];
   data.points      = data.points      || [];
-  data.perimeter   = data.perimeter   || null;
-  data.accessArrow = data.accessArrow || null;
+  data.perimeter        = data.perimeter        || null;
+  data.accessArrow      = data.accessArrow      || null;
+  data.mapDrawingLayers = data.mapDrawingLayers || [];
 
   let done = 0;
   const tick = () => { done++; onProgress(done); };
@@ -1650,6 +1657,7 @@ function selectSite(siteId) {
       .forEach(pt => addPointMarker(pt));
     if (site.perimeter)   renderSitePerimeter(site);
     if (site.accessArrow) renderAccessArrow(site);
+    drawing.renderMapLayers();
   }
 
   updateMarkersVisibility();
@@ -1678,6 +1686,7 @@ function deselectSite() {
   updateSiteMarkerIcon(prev, false);
   clearBuildingMarkers();
   clearPointMarkers();
+  drawing.clearMapLayers();
   if (perimeterLayer) { perimeterLayer.remove(); perimeterLayer = null; }
   if (accessArrowMarker) { accessArrowMarker.remove(); accessArrowMarker = null; }
 
@@ -2256,15 +2265,21 @@ function appendNavItem(nav, { icon, label, active, sub, onDelete, onClick }) {
 function switchViewMode(mode) {
   state.viewMode = mode;
 
+  // Cancel any in-progress drawing when switching views
+  if (drawing.isPlanDrawing) drawing.cancelPlanDrawing();
+  if (interactionMode === 'map-drawing') drawing.cancelMapDrawing();
+
   document.getElementById('map-container').classList.toggle('hidden', mode !== 'map');
   document.getElementById('plan-container').classList.toggle('hidden', mode !== 'plan');
   document.getElementById('map-search').classList.toggle('hidden', mode !== 'map');
 
   if (mode === 'map') {
     setTimeout(() => { if (map) map.invalidateSize(); }, 50);
+    drawing.renderMapLayers();
   } else {
     renderPlan();
   }
+  drawing.renderPanel();
   renderSidebar();
 }
 
@@ -2276,6 +2291,10 @@ function selectFloor(buildingId, floorId) {
   state.activePointId    = null;
   state.activePhotoId    = null;
 
+  // Cancel any in-progress drawing when switching floor
+  if (drawing.isPlanDrawing) drawing.cancelPlanDrawing();
+  drawing.setTool(null);
+
   Object.entries(buildingMarkers).forEach(([id, m]) => {
     const site = getActiveSite();
     const bld  = site?.buildings.find(b => b.id === id);
@@ -2284,6 +2303,7 @@ function selectFloor(buildingId, floorId) {
 
   switchViewMode('plan');
   closeViewer();
+  drawing.renderPanel();
   renderSidebar();
 }
 
@@ -2293,8 +2313,14 @@ function selectSitePlan(planId) {
   state.activeFloorId    = null;
   state.activePointId    = null;
   state.activePhotoId    = null;
+
+  // Cancel any in-progress drawing when switching site plan
+  if (drawing.isPlanDrawing) drawing.cancelPlanDrawing();
+  drawing.setTool(null);
+
   switchViewMode('plan');
   closeViewer();
+  drawing.renderPanel();
   renderSidebar();
 }
 
@@ -2398,6 +2424,7 @@ async function renderPlan() {
   document.getElementById('plan-floor-name').textContent = active.label;
 
   const btnDl = document.getElementById('btn-download-plan');
+  const btnDlA = document.getElementById('btn-download-plan-annotated');
   if (btnDl) {
     if (active.imageId) {
       btnDl.classList.remove('hidden');
@@ -2407,9 +2434,11 @@ async function renderPlan() {
           _sanitizeFilename(`${site?.name || 'site'}_${active.label}`) + (ext ? '.' + ext : '')
         );
       };
+      if (btnDlA) btnDlA.classList.remove('hidden');
     } else {
       btnDl.classList.add('hidden');
       btnDl.onclick = null;
+      if (btnDlA) btnDlA.classList.add('hidden');
     }
   }
 
@@ -2563,6 +2592,8 @@ function renderPlanMarkers() {
     });
     svg.appendChild(g);
   });
+
+  drawing.renderPlanLayers(svg);
 }
 
 function showPlanPointContextMenu(e, point) {
@@ -2752,6 +2783,8 @@ function initPlanEvents() {
 
   viewport.addEventListener('mousedown', e => {
     if (e.button !== 0) return;
+    // Block panning when a drawing tool is active (SVG overlay handles clicks)
+    if (drawing?.isBlockingPan) return;
     plan.dragging = true;
     dragMoved = false;
     plan.dragStart = { x: e.clientX - plan.offsetX, y: e.clientY - plan.offsetY };
@@ -3157,12 +3190,33 @@ function renderSfContacts() {
   });
 }
 
+// (drawing functions moved to drawing.js)
 // ===== INIT =====
 function init() {
+  drawing = initDrawing({
+    getViewMode:          () => state.viewMode,
+    getActiveSite,
+    getActiveSitePlanId:  () => state.activeSitePlanId,
+    getActiveBuildingId:  () => state.activeBuildingId,
+    getActiveFloorId:     () => state.activeFloorId,
+    getPlan:              () => plan,
+    getMap:               () => map,
+    getInteractionMode:   () => interactionMode,
+    setInteractionMode:   m  => { interactionMode = m; },
+    uid,
+    sanitizeFilename:     _sanitizeFilename,
+    getActivePlanInfo:    () => _getActivePlan(state, getActiveSite()),
+    onSave:               scheduleCacheSave,
+    onRefreshPlan:        renderPlanMarkers,
+    setStepBanner,
+    clearStepBanner,
+  });
+
   initViewerSplitter();
   initMap();
   initSearch();
   initPlanEvents();
+  drawing.initEvents();
 
   // ---- Top bar ----
   document.getElementById('btn-load-site').addEventListener('click', () => {
@@ -3321,6 +3375,12 @@ function init() {
       else if (interactionMode === 'move-building')        cancelMoveBuilding();
       else if (interactionMode === 'move-site')            cancelMoveSite();
       else if (interactionMode === 'orient-access-arrow') { clearStepBanner(); interactionMode = null; }
+      else if (drawing.isPlanDrawing)                        drawing.cancelPlanDrawing();
+      else if (interactionMode === 'map-drawing')          drawing.cancelMapDrawing();
+      else if (drawing.tool) drawing.setTool(null);
+    }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && !e.target.matches('input,textarea,[contenteditable]')) {
+      drawing.deleteSelectedShape();
     }
   });
 

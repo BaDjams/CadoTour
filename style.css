@@ -1085,6 +1085,252 @@ textarea.input-field { resize: vertical; min-height: 60px; }
 .text-xs   { font-size: 11px; }
 .font-bold { font-weight: 700; }
 
+/* ===== DRAWING PANEL ===== */
+#center-panel { position: relative; }
+
+.drawing-panel {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  z-index: 500;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+  width: 210px;
+  overflow: hidden;
+  user-select: none;
+}
+
+.drawing-toggle-btn {
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  display: block;
+}
+.drawing-toggle-btn:hover { background: var(--color-surface2); }
+
+.drawing-panel-body {
+  border-top: 1px solid var(--color-border);
+  padding: 6px;
+}
+
+.drawing-layers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 170px;
+  overflow-y: auto;
+}
+
+.drawing-layer-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  border-left: 2px solid transparent;
+}
+.drawing-layer-row:hover { background: var(--color-surface2); }
+.drawing-layer-row.active {
+  background: rgba(233,69,96,0.12);
+  border-left-color: var(--color-accent);
+}
+
+.dl-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 3px;
+  cursor: pointer;
+}
+.dl-name-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 1px 4px;
+  border: 1px solid var(--color-accent);
+  border-radius: 3px;
+  background: var(--color-surface2);
+  color: var(--color-text);
+  outline: none;
+}
+
+.dl-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 11px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.dl-btn:hover:not(:disabled) { color: var(--color-text); background: var(--color-surface2); }
+.dl-btn.dl-del:hover:not(:disabled) { color: var(--color-danger); background: rgba(192,57,43,0.15); }
+.dl-btn:disabled { opacity: 0.25; cursor: default; }
+
+.drawing-add-layer-btn {
+  width: 100%;
+  margin-top: 4px;
+  padding: 5px 8px;
+  background: none;
+  border: 1px dashed var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.drawing-add-layer-btn:hover { color: var(--color-text); border-color: var(--color-text-muted); }
+
+.drawing-toolbar {
+  border-top: 1px solid var(--color-border);
+  margin-top: 6px;
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.draw-tools-row {
+  display: flex;
+  gap: 3px;
+}
+
+.draw-tool-btn {
+  flex: 1;
+  padding: 5px 2px;
+  background: var(--color-surface2);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: center;
+  line-height: 1;
+}
+.draw-tool-btn:hover { background: rgba(233,69,96,0.18); border-color: var(--color-accent); }
+.draw-tool-btn.active { background: var(--color-accent); color: white; border-color: var(--color-accent); }
+
+.draw-opts-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+#drawing-color,
+#drawing-outline-color {
+  width: 30px;
+  height: 26px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface2);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.drawing-stroke-input {
+  width: 44px;
+  padding: 3px 5px;
+  background: var(--color-surface2);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text);
+  font-size: 11px;
+}
+select.drawing-stroke-input {
+  width: 56px;
+  padding: 3px 2px;
+  cursor: pointer;
+}
+
+/* SVG drawing shapes in plan overlay */
+.drawing-shape { cursor: default; }
+.drawing-shape.editing { cursor: move; }
+.drawing-shape.drawing-shape-selected polygon,
+.drawing-shape.drawing-shape-selected polyline,
+.drawing-shape.drawing-shape-selected text,
+.drawing-shape.drawing-shape-selected line { filter: drop-shadow(0 0 3px rgba(255,255,255,0.5)); }
+
+.drawing-handle {
+  cursor: move;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.5));
+}
+.drawing-midpoint {
+  cursor: crosshair;
+  transition: opacity 0.12s;
+}
+
+/* Plan viewport in drawing mode → SVG becomes full-size + interactive */
+#plan-viewport.drawing-mode #plan-overlay,
+#plan-viewport.drawing-select #plan-overlay {
+  width: 100%;
+  height: 100%;
+}
+
+/* Text input popover */
+.drawing-text-popover {
+  position: absolute;
+  z-index: 600;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 10px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.5);
+  min-width: 200px;
+}
+
+/* Map drawing text labels */
+.map-drawing-text {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-weight: 600;
+  white-space: nowrap;
+  text-shadow: 0 0 4px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,1);
+  pointer-events: none;
+  line-height: 1;
+}
+
+/* Draggable vertex handle markers on map */
+.drawing-handle-marker .drawing-handle-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: white;
+  border: 2px solid var(--color-accent);
+  cursor: move;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+.drawing-handle-marker:hover .drawing-handle-dot,
+.drawing-handle-marker.leaflet-marker-draggable .drawing-handle-dot {
+  background: var(--color-accent);
+}
+/* Midpoint insertion markers on map */
+.drawing-midpoint-marker .drawing-midpoint-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  opacity: 0.45;
+  border: 1.5px solid white;
+  cursor: crosshair;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  transition: opacity 0.12s;
+}
+.drawing-midpoint-marker:hover .drawing-midpoint-dot { opacity: 0.9; }
+
 /* ===== UTILITIES ===== */
 .hidden { display: none !important; }
 
