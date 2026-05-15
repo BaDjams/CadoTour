@@ -698,12 +698,14 @@ export function initDrawing(deps) {
     c.drawImage(plan.img, 0, 0, W, H);
 
     if (hasAnnotations) {
+      // strokeWidth is in screen pixels; scale up to match image natural resolution
+      const strokeScale = 1 / plan.scale;
       const fakePlan = { scale: 1, offsetX: 0, offsetY: 0 };
       const ordered = [...layers].reverse();
       for (const layer of ordered) {
         if (!layer.visible) continue;
         for (const shape of layer.shapes) {
-          _drawShapeOnCanvas(c, shape, fakePlan);
+          _drawShapeOnCanvas(c, shape, fakePlan, strokeScale);
         }
       }
     }
@@ -718,13 +720,13 @@ export function initDrawing(deps) {
     }, 'image/jpeg', 0.92);
   }
 
-  function _drawShapeOnCanvas(c, shape, fakePlan) {
+  function _drawShapeOnCanvas(c, shape, fakePlan, strokeScale = 1) {
     if (!shape.points?.length) return;
     const pts = shape.points.map(p => ({
       x: p.x * fakePlan.scale + fakePlan.offsetX,
       y: p.y * fakePlan.scale + fakePlan.offsetY,
     }));
-    const sw  = shape.strokeWidth || 2;
+    const sw  = (shape.strokeWidth || 2) * strokeScale;
     const col = shape.color || '#e63946';
 
     c.save();
@@ -772,8 +774,8 @@ export function initDrawing(deps) {
       drawHead(pts[pts.length - 1], pts[pts.length - 2]);
       if (shape.doubleArrow) drawHead(pts[0], pts[1]);
     } else if (shape.type === 'text' && pts.length >= 1) {
-      const fs  = shape.fontSize || 14;
-      const ow  = shape.strokeWidth ?? 2;
+      const fs  = (shape.fontSize || 14) * strokeScale;
+      const ow  = (shape.strokeWidth ?? 2) * strokeScale;
       const oc  = shape.outlineColor || 'rgba(0,0,0,0.65)';
       c.font      = `600 ${fs}px "Segoe UI", system-ui, sans-serif`;
       c.fillStyle = col;
@@ -861,7 +863,7 @@ export function initDrawing(deps) {
     });
     document.getElementById('btn-add-drawing-layer').addEventListener('click', addLayer);
 
-    document.querySelectorAll('.draw-tool-btn').forEach(btn => {
+    document.querySelectorAll('.draw-tool-btn[data-tool]').forEach(btn => {
       btn.addEventListener('click', () => _handleToolBtnClick(btn.dataset.tool));
     });
 
@@ -973,7 +975,7 @@ export function initDrawing(deps) {
         icon: L.divIcon({
           className: '',
           html: `<div class="map-drawing-text" style="color:${escapeAttr(shape.color || '#e63946')};font-size:${fs}px;text-shadow:${shadow}">${escapeHtml(shape.text || '')}</div>`,
-          iconSize: [0, 0], iconAnchor: [0, 0],
+          iconSize: null, iconAnchor: [0, 0],
         }),
         interactive: true,
       });
