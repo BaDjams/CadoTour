@@ -13,8 +13,7 @@ import { SITE_ICONS, BUILDING_ICONS, renderIcon } from './icons.js';
 import * as imageStore from './imageStore.js';
 import * as progress from './progress.js';
 import { initViewerSplitter, showResizer, hideResizer } from './splitter.js';
-import * as fflate from 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js';
-import { ZipReader, BlobReader, BlobWriter, TextWriter } from 'https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.7.55/+esm';
+import { ZipReader, ZipWriter, BlobReader, BlobWriter, TextWriter } from 'https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.7.55/+esm';
 
 // ===== MODE (creator vs tour/viewer) =====
 let tourMode = new URL(location).searchParams.has('tour');
@@ -412,7 +411,9 @@ async function _ensureZipSourceForSave(siteId) {
     const rawEntries = await reader.getEntries();
     const imageEntries = new Map();
     for (const e of rawEntries) {
-      if (e.filename.startsWith('images/')) imageEntries.set(e.filename.slice(7), e);
+      if (e.directory || e.filename === 'metadata.json') continue;
+      imageEntries.set(e.filename, e);                                          // nouveau format : chemin complet
+      if (e.filename.startsWith('images/')) imageEntries.set(e.filename.slice(7), e); // compat anciens .cado
     }
     siteZipSources.set(siteId, { reader, entries: imageEntries, filename: file.name });
     _modifiedZipSites.add(siteId);
@@ -1238,7 +1239,9 @@ async function _loadSiteFromZip(file) {
 
     const imageEntries = new Map();
     for (const e of entries) {
-      if (e.filename.startsWith('images/')) imageEntries.set(e.filename.slice(7), e);
+      if (e.directory || e.filename === 'metadata.json') continue;
+      imageEntries.set(e.filename, e);                                          // nouveau format : chemin complet
+      if (e.filename.startsWith('images/')) imageEntries.set(e.filename.slice(7), e); // compat anciens .cado
     }
 
     const total = countEagerImages(data);
@@ -1430,67 +1433,149 @@ async function _downloadImage(imageId, nameFn) {
 }
 
 // Collecte toutes les références d'images du site → Map<imageId, {filename, mime, blob}>.
-// getBlob() renvoie un Blob sans charger les octets dans le heap V8 (juste un handle natif).
-// Le nom de fichier dans le ZIP est le nom original (imageFilename) ou l'imageId en fallback.
-// Les doublons de noms sont disambigués avec un suffixe (2), (3)…
+// Construit la table imageId → { filename, mime, blob|entry, isPhoto, is360 }.
+// Les chemins ZIP reflètent la structure du site :
+//   illustration.ext        → racine
+//   plans/{sp.name}.ext     → image d'un plan de site
+//   plans/{bld}/{fl}.ext    → image d'un plan d'étage
+//   EXT/{orig}.ext          → photo sur la carte géo
+//   {sp.name}/{orig}.ext    → photo sur un plan de site
+//   {bld}/{fl}/{orig}.ext   → photo intérieure
+// Compatibilité lecture : anciens .cado avec images/ encore supportés au chargement.
 async function _collectImageMap(site) {
   const map       = new Map();
-  const usedNames = new Set();
+  const usedPaths = new Set();
 
-  const uniqueName = preferred => {
-    if (!usedNames.has(preferred)) { usedNames.add(preferred); return preferred; }
-    const dot  = preferred.lastIndexOf('.');
-    const stem = dot > 0 ? preferred.slice(0, dot) : preferred;
-    const ext  = dot > 0 ? preferred.slice(dot)  : '';
+  // Sanitise un composant de chemin : interdit \/:*?"<>| (garde accents/espaces)
+  const slug = s => (s || '').replace(/[\\/:*?"<>|]/g, '_').trim() || 'sans_nom';
+
+  // Déduplique un chemin ZIP complet en ajoutant (2), (3)… si nécessaire
+  const uniquePath = path => {
+    if (!usedPaths.has(path)) { usedPaths.add(path); return path; }
+    const dot  = path.lastIndexOf('.');
+    const sl   = path.lastIndexOf('/');
+    const hasExt = dot > sl;
+    const base = hasExt ? path.slice(0, dot) : path;
+    const ext  = hasExt ? path.slice(dot)    : '';
     let n = 2;
-    while (usedNames.has(`${stem} (${n})${ext}`)) n++;
-    const name = `${stem} (${n})${ext}`;
-    usedNames.add(name); return name;
+    while (usedPaths.has(`${base} (${n})${ext}`)) n++;
+    const p = `${base} (${n})${ext}`;
+    usedPaths.add(p); return p;
   };
 
-  const register = async (id, preferredName, isPhoto = false, is360 = false) => {
+  // Nom de base d'un fichier : dernière composante du chemin, caractères interdits nettoyés
+  const baseName = s => (s || '').split('/').pop().replace(/[\\:*?"<>|]/g, '_') || 'image';
+
+  // Tables de lookup par id
+  const buildingById = new Map((site.buildings || []).map(b => [b.id, b]));
+  const sitePlanById = new Map((site.sitePlans  || []).map(sp => [sp.id, sp]));
+
+  // Enregistre une image de plan (illustration / plan de site / plan d'étage)
+  const registerPlan = async (id, zipPath) => {
     if (!id || map.has(id)) return;
     const blob = await imageStore.getBlob(id);
     if (!blob) return;
-    const mime     = blob.type || 'application/octet-stream';
-    const ext      = _mimeToExt(mime);
-    const fallback = id + (ext ? '.' + ext : '');
-    const filename = uniqueName(preferredName || fallback);
-    map.set(id, { filename, mime, blob, isPhoto, is360 });
+    const mime = blob.type || 'application/octet-stream';
+    const ext  = _mimeToExt(mime);
+    // Si zipPath ne contient pas d'extension, en ajouter une d'après le MIME
+    const path = uniquePath(!ext || zipPath.includes('.') ? zipPath : zipPath + '.' + ext);
+    map.set(id, { filename: path, mime, blob, isPhoto: false, is360: false });
   };
 
-  // Photos en lazy load : pas d'imageId, on lit l'entry zip.js directement
-  // à l'écriture du nouveau ZIP. Évite l'extraction → IDB → relecture en
-  // mémoire pour les photos jamais ouvertes (pass-through).
-  const registerLazy = (ph, is360) => {
+  // Stem d'une photo : titre saisi par l'utilisateur, ou nom de fichier original sans extension
+  const photoStem = ph =>
+    (ph.title && ph.title.replace(/[\\/:*?"<>|]/g, '_').trim()) ||
+    baseName(ph.imageFilename || ph.imageFile).replace(/\.[^.]+$/, '') ||
+    'photo';
+
+  // Enregistre une photo (blob IDB disponible)
+  const registerPhoto = async (id, folder, ph, is360) => {
+    if (!id || map.has(id)) return;
+    const blob = await imageStore.getBlob(id);
+    if (!blob) return;
+    const mime = blob.type || 'application/octet-stream';
+    const ext  = _mimeToExt(mime);
+    const base = photoStem(ph) + (ext ? '.' + ext : '');
+    map.set(id, { filename: uniquePath(`${folder}/${base}`), mime, blob, isPhoto: true, is360 });
+  };
+
+  // Enregistre une photo lazy (toujours dans le ZIP source — pass-through)
+  const registerLazy = (ph, folder, is360) => {
     if (!ph.imageFile) return;
     const bundle = siteZipSources.get(site.id);
     if (!bundle) return;
     const entry = bundle.entries.get(ph.imageFile);
     if (!entry) return;
-    const key  = `lazy:${site.id}:${ph.imageFile}`;
+    const key = `lazy:${site.id}:${ph.imageFile}`;
     if (map.has(key)) return;
     const mime = ph.imageMime || 'application/octet-stream';
-    const filename = uniqueName(ph.imageFilename || ph.imageFile);
-    map.set(key, { filename, mime, entry, isPhoto: true, is360 });
+    const ext  = _mimeToExt(mime);
+    const base = photoStem(ph) + (ext ? '.' + ext : '');
+    map.set(key, { filename: uniquePath(`${folder}/${base}`), mime, entry, isPhoto: true, is360 });
   };
 
-  if (site.illustrationId) await register(site.illustrationId, site.illustrationFilename);
-  for (const sp of site.sitePlans || []) if (sp.imageId) await register(sp.imageId, sp.imageFilename);
-  for (const bld of site.buildings || []) for (const fl of bld.floors || []) if (fl.imageId) await register(fl.imageId, fl.imageFilename);
+  // ── Illustration → illustration.ext ──────────────────────────────────────
+  if (site.illustrationId) {
+    const blob = await imageStore.getBlob(site.illustrationId);
+    if (blob) {
+      const mime = blob.type || 'application/octet-stream';
+      const ext  = _mimeToExt(mime);
+      map.set(site.illustrationId, { filename: uniquePath('illustration' + (ext ? '.' + ext : '')), mime, blob, isPhoto: false, is360: false });
+    }
+  }
+
+  // ── Images des plans de site → plans/{sp.name}.ext ────────────────────────
+  for (const sp of site.sitePlans || []) {
+    if (!sp.imageId) continue;
+    const name = slug(sp.name || `plan_${sp.id}`);
+    await registerPlan(sp.imageId, `plans/${name}`);
+  }
+
+  // ── Images des plans d'étage → plans/{bld.name}/{fl.name}.ext ────────────
+  for (const bld of site.buildings || []) {
+    const bldName = slug(bld.name || `batiment_${bld.id}`);
+    for (const fl of bld.floors || []) {
+      if (!fl.imageId) continue;
+      const flName = slug(fl.name || `niveau_${fl.id}`);
+      await registerPlan(fl.imageId, `plans/${bldName}/${flName}`);
+    }
+  }
+
+  // ── Photos des points ─────────────────────────────────────────────────────
   for (const pt of site.points || []) {
     const is360 = pt.type === '360';
+
+    // Calcul du dossier cible selon le contexte du point
+    let folder;
+    if (pt.buildingId && pt.floorId) {
+      const bld     = buildingById.get(pt.buildingId);
+      const fl      = bld?.floors?.find(f => f.id === pt.floorId);
+      const bldName = slug(bld?.name  || pt.buildingId);
+      const flName  = slug(fl?.name   || pt.floorId);
+      folder = `${bldName}/${flName}`;
+    } else if (pt.sitePlanId) {
+      const sp = sitePlanById.get(pt.sitePlanId);
+      folder = slug(sp?.name || 'planmasse');
+    } else {
+      folder = 'EXT';
+    }
+
     for (const ph of pt.photos || []) {
       if (ph.imageId) {
-        await register(ph.imageId, ph.imageFilename, true, is360);
-        // Fallback : si le blob IDB est absent (session différente, IDB purgé…)
-        // et qu'une entrée ZIP est disponible, on l'utilise pour ne pas perdre la photo.
-        if (!map.has(ph.imageId) && ph.imageFile) registerLazy(ph, is360);
-      } else {
-        registerLazy(ph, is360);
+        if (map.has(ph.imageId)) continue;
+        const blob = await imageStore.getBlob(ph.imageId);
+        if (blob) {
+          await registerPhoto(ph.imageId, folder, ph, is360);
+        } else if (ph.imageFile) {
+          // IDB miss → fallback vers l'entrée ZIP source si disponible
+          registerLazy(ph, folder, is360);
+        }
+      } else if (ph.imageFile) {
+        registerLazy(ph, folder, is360);
       }
     }
   }
+
   return map;
 }
 
@@ -1546,40 +1631,42 @@ function _buildMetaFromSite(site, imageMap) {
   return meta;
 }
 
+// Adaptateur zip.js Writer → FileSystemWritableFileStream.
+// zip.js appelle writeUint8Array() en séquence ; on délègue à writable.write().
+class _FSAAWriter {
+  constructor(ws) { this._ws = ws; }
+  async init() {}
+  async writeUint8Array(arr) { await this._ws.write(arr); }
+  getData() {}
+}
+
 // Streaming ZIP → FileSystemWritableFileStream (FSAA).
-// Pic mémoire : ~une image à la fois (blob.arrayBuffer() charge ~2 Mo, puis libéré).
+// Utilise zip.js ZipWriter avec zip64:true pour dépasser la limite ZIP32 de 4 Go.
 // L'ordre d'écriture est : (1) toutes les images (avec compression éventuelle qui
 // peut changer mime/extension), puis (2) metadata.json — pour que la metadata
-// référence les filenames/mimes finalisés. zip.js gère l'ordre arbitraire à la lecture.
+// référence les filenames/mimes finalisés.
 async function _saveSiteAsZip(site, writable, onProgress, options = {}) {
-  const enc = new TextEncoder();
   const compress = options.compress !== false;
   let done = 0;
   const tick = () => { done++; onProgress(done); };
 
   const imageMap = await _collectImageMap(site);
-
-  let pendingWrite = Promise.resolve();
-  let _zipErr = null;
-  const zip = new fflate.Zip((err, chunk) => {
-    if (err) { _zipErr = err; return; }
-    pendingWrite = pendingWrite.then(() => writable.write(chunk));
-  });
+  const zipWriter = new ZipWriter(new _FSAAWriter(writable), { zip64: true });
 
   // Phase 1 : écriture de chaque image, compressée si demandé
   for (const [, mapEntry] of imageMap) {
-    let arr;
+    let blob;
     if (mapEntry.blob) {
-      arr = new Uint8Array(await mapEntry.blob.arrayBuffer());
+      blob = mapEntry.blob;
     } else if (mapEntry.entry) {
-      const b = await mapEntry.entry.getData(new BlobWriter(mapEntry.mime));
-      arr = new Uint8Array(await b.arrayBuffer());
+      blob = await mapEntry.entry.getData(new BlobWriter(mapEntry.mime));
     } else continue;
 
     if (compress && mapEntry.isPhoto) {
+      const arr = new Uint8Array(await blob.arrayBuffer());
       const r = await _compressPhoto(arr, mapEntry.mime, mapEntry.is360);
       if (r) {
-        arr = r.bytes;
+        blob = new Blob([r.bytes], { type: r.mime });
         if (r.mime !== mapEntry.mime) {
           mapEntry.mime = r.mime;
           const newExt = _mimeToExt(r.mime);
@@ -1588,58 +1675,42 @@ async function _saveSiteAsZip(site, writable, onProgress, options = {}) {
       }
     }
 
-    const fflateEntry = new fflate.ZipPassThrough(`images/${mapEntry.filename}`);
-    zip.add(fflateEntry);
-    fflateEntry.push(arr, true);
-    await pendingWrite;
-    if (_zipErr) throw _zipErr;
+    await zipWriter.add(mapEntry.filename, new BlobReader(blob), { level: 0 });
     tick();
   }
 
   // Phase 2 : metadata.json après que tous les filenames/mimes soient finalisés
   const meta = _buildMetaFromSite(site, imageMap);
-  const metaEntry = new fflate.ZipPassThrough('metadata.json');
-  zip.add(metaEntry);
-  metaEntry.push(enc.encode(JSON.stringify(meta)), true);
-  await pendingWrite;
-  if (_zipErr) throw _zipErr;
+  await zipWriter.add('metadata.json', new BlobReader(new Blob([JSON.stringify(meta)])), { level: 0 });
 
-  zip.end();
-  await pendingWrite;
-  if (_zipErr) throw _zipErr;
+  await zipWriter.close();
 }
 
 // Chemin legacy (Safari / navigateurs sans FSAA) : ZIP en mémoire + a.download.
-// Pic mémoire : ~taille ZIP (pas d'allocation intermédiaire grâce à new Blob(chunks)).
+// Utilise zip.js ZipWriter+BlobWriter avec zip64:true — pas de limite 4 Go.
 async function _saveSiteAsZipLegacy(site, fname, onProgress, options = {}) {
-  const enc = new TextEncoder();
   const compress = options.compress !== false;
   let done = 0;
   const tick = () => { done++; onProgress(done); };
 
   const imageMap = await _collectImageMap(site);
+  const blobWriter = new BlobWriter('application/zip');
+  const zipWriter  = new ZipWriter(blobWriter, { zip64: true });
 
-  const chunks = [];
-  let _zipErr2 = null;
-  const zip = new fflate.Zip((err, chunk) => {
-    if (err) { _zipErr2 = err; return; }
-    chunks.push(chunk);
-  });
-
-  // Phase 1 : images (compressées si activé) — voir _saveSiteAsZip pour le rationnel.
+  // Phase 1 : images (compressées si activé)
   for (const [, mapEntry] of imageMap) {
-    let arr;
+    let blob;
     if (mapEntry.blob) {
-      arr = new Uint8Array(await mapEntry.blob.arrayBuffer());
+      blob = mapEntry.blob;
     } else if (mapEntry.entry) {
-      const b = await mapEntry.entry.getData(new BlobWriter(mapEntry.mime));
-      arr = new Uint8Array(await b.arrayBuffer());
+      blob = await mapEntry.entry.getData(new BlobWriter(mapEntry.mime));
     } else continue;
 
     if (compress && mapEntry.isPhoto) {
+      const arr = new Uint8Array(await blob.arrayBuffer());
       const r = await _compressPhoto(arr, mapEntry.mime, mapEntry.is360);
       if (r) {
-        arr = r.bytes;
+        blob = new Blob([r.bytes], { type: r.mime });
         if (r.mime !== mapEntry.mime) {
           mapEntry.mime = r.mime;
           const newExt = _mimeToExt(r.mime);
@@ -1648,24 +1719,17 @@ async function _saveSiteAsZipLegacy(site, fname, onProgress, options = {}) {
       }
     }
 
-    const fflateEntry = new fflate.ZipPassThrough(`images/${mapEntry.filename}`);
-    zip.add(fflateEntry); fflateEntry.push(arr, true);
-    if (_zipErr2) throw _zipErr2;
+    await zipWriter.add(mapEntry.filename, new BlobReader(blob), { level: 0 });
     tick();
   }
 
   // Phase 2 : metadata.json après finalisation des filenames/mimes
   const meta = _buildMetaFromSite(site, imageMap);
-  const metaEntry = new fflate.ZipPassThrough('metadata.json');
-  zip.add(metaEntry);
-  metaEntry.push(enc.encode(JSON.stringify(meta)), true);
-  if (_zipErr2) throw _zipErr2;
+  await zipWriter.add('metadata.json', new BlobReader(new Blob([JSON.stringify(meta)])), { level: 0 });
 
-  zip.end();
-  if (_zipErr2) throw _zipErr2;
   progress.setLabel('Génération du fichier…');
+  const dlBlob = await zipWriter.close();
 
-  const dlBlob = new Blob(chunks, { type: 'application/zip' });
   const url = URL.createObjectURL(dlBlob);
   const a   = document.createElement('a');
   a.href = url; a.download = fname; a.click();
