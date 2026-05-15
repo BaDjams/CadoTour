@@ -151,3 +151,37 @@ export async function migrateDataURL(dataURL) {
   const blob = dataURLtoBlob(dataURL);
   return await putBlob(blob);
 }
+
+// ===== FileSystemFileHandle persistence (File System Access API) =====
+// Permet de rouvrir un .cado automatiquement après une fermeture accidentelle.
+// Les handles sont stockés dans le store "state" sous la clé "zip-handle:<siteId>".
+
+export async function putZipHandle(siteId, handle) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_STATE, 'readwrite');
+    tx.objectStore(STORE_STATE).put(handle, `zip-handle:${siteId}`);
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
+  });
+}
+
+export async function getZipHandle(siteId) {
+  const db = await openDB();
+  return new Promise(resolve => {
+    const req = db.transaction(STORE_STATE, 'readonly')
+      .objectStore(STORE_STATE).get(`zip-handle:${siteId}`);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror   = () => resolve(null);
+  });
+}
+
+export async function deleteZipHandle(siteId) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_STATE, 'readwrite');
+    tx.objectStore(STORE_STATE).delete(`zip-handle:${siteId}`);
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
+  });
+}

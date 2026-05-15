@@ -23,7 +23,9 @@ let _saveTimer = null;
 // leur chargement (ajout photo, dessin, suppression…). Seuls ceux-ci sont
 // persistés : un .cado ouvert sans modification n'a pas besoin de failsafe
 // car l'utilisateur peut simplement le recharger.
-const _modifiedZipSites = new Set();
+const _modifiedZipSites    = new Set();
+const _zipSiteDeletedPhotos = new Map(); // siteId → Set<photoId> originales supprimées
+let   _pendingRestore = null;            // données pré-chargées pour le modal de restauration
 
 async function _openDB() { return imageStore.openDB(); }
 
@@ -41,14 +43,16 @@ async function saveCacheNow() {
     const db = await _openDB();
     const tx = db.transaction(DB_STORE, 'readwrite');
     // Sites .cado : inclus uniquement s'ils ont été modifiés depuis le chargement.
-    // Les photos sans imageId (pas encore extraites du ZIP) sont écartées ;
-    // tout le reste (photos ouvertes/nouvelles, calques de dessin) est restaurable.
+    // _cadoFilename + _deletedPhotoIds permettent le rechargement complet au réveil.
     const serializable = state.sites
       .filter(s => !siteZipSources.has(s.id) || _modifiedZipSites.has(s.id))
       .map(s => {
         if (!siteZipSources.has(s.id)) return s;
+        const deletedIds = _zipSiteDeletedPhotos.get(s.id);
         return {
           ...s,
+          _cadoFilename:    siteZipSources.get(s.id)?.filename || null,
+          _deletedPhotoIds: deletedIds ? [...deletedIds] : [],
           points: (s.points || []).map(pt => ({
             ...pt,
             photos: (pt.photos || []).filter(ph => ph.imageId),
@@ -79,24 +83,147 @@ async function checkCacheRestore() {
     if (!raw) return;
     const sites = JSON.parse(raw);
     if (!Array.isArray(sites) || !sites.length) return;
-    // Filtre les sites au format obsolète (pré-points[]) — on les ignore.
     const validSites = sites.filter(s => Array.isArray(s.points));
     if (!validSites.length) { clearCacheState(); return; }
-    const names = validSites.map(s => s.name || 'Sans nom').join(', ');
-    if (!confirm(`Session non sauvegardée (${validSites.length} site(s) : ${names}).\nRestaurer ?`)) {
-      clearCacheState(); return;
+
+    // Pré-charge tous les handles depuis IDB avant d'afficher le modal.
+    // Nécessaire car requestPermission() exige un geste utilisateur — les handles
+    // doivent être en mémoire pour y accéder directement depuis le clic du bouton.
+    const zipEntries = [];
+    const pureSites  = [];
+    for (const s of validSites) {
+      if (s._deletedPhotoIds !== undefined) {
+        const handle = await imageStore.getZipHandle(s.id);
+        zipEntries.push({ cachedSite: s, handle });
+      } else {
+        pureSites.push(s);
+      }
     }
-    for (const data of validSites) {
-      await normalizeSite(data);
-      if (state.sites.find(s => s.id === data.id)) continue;
-      state.sites.push(data);
-      addSiteMarker(data);
-      if (data.perimeter)   renderSitePerimeter(data);
-      if (data.accessArrow) renderAccessArrow(data);
-    }
-    if (validSites.length) selectSite(validSites[0].id);
-    updateTopBarButtons();
+
+    _pendingRestore = { zipEntries, pureSites };
+    _showRestoreModal(zipEntries, pureSites);
   } catch (e) { console.warn('Cache restore failed:', e); }
+}
+
+function _showRestoreModal(zipEntries, pureSites) {
+  const list = document.getElementById('restore-session-list');
+  list.innerHTML = '';
+
+  for (const { cachedSite, handle } of zipEntries) {
+    const adds  = (cachedSite.points || [])
+      .flatMap(p => (p.photos || []).filter(ph => ph.imageId && !ph.imageFile)).length;
+    const dels  = (cachedSite._deletedPhotoIds || []).length;
+    const draws = _countCachedDrawings(cachedSite);
+    const parts = [];
+    if (adds)  parts.push(`+${adds} photo${adds > 1 ? 's' : ''}`);
+    if (dels)  parts.push(`-${dels} suppression${dels > 1 ? 's' : ''}`);
+    if (draws) parts.push(`${draws} dessin${draws > 1 ? 's' : ''}`);
+    const filename = cachedSite._cadoFilename || cachedSite.name || 'fichier .cado';
+    const badge    = handle
+      ? '<span style="color:var(--color-success,#22c55e)">↺ rechargé depuis le fichier</span>'
+      : '<span style="color:var(--color-warning,#f59e0b)">⚠ restauration partielle</span>';
+    const detail = parts.length ? ` — ${parts.join(', ')}` : '';
+    const row = document.createElement('p');
+    row.style.cssText = 'margin:4px 0;font-size:13px;line-height:1.4';
+    row.innerHTML = `<strong>${escapeHtml(filename)}</strong>${escapeHtml(detail)}<br><small>${badge}</small>`;
+    list.appendChild(row);
+  }
+
+  for (const s of pureSites) {
+    const row = document.createElement('p');
+    row.style.cssText = 'margin:4px 0;font-size:13px';
+    row.textContent = s.name || 'Site sans nom';
+    list.appendChild(row);
+  }
+
+  showModal('modal-restore-session');
+}
+
+function _countCachedDrawings(site) {
+  let n = 0;
+  const count = layers => (layers || []).forEach(l => n += (l.shapes || []).length);
+  count(site.mapDrawingLayers);
+  for (const bld of site.buildings || [])
+    for (const fl of bld.floors || []) count(fl.layers);
+  for (const sp of site.sitePlans || []) count(sp.layers);
+  return n;
+}
+
+// Fusionne les modifications en cache sur un site rechargé depuis le .cado d'origine.
+function _applyZipDelta(freshSite, cachedSite) {
+  const deletedPhotoIds = new Set(cachedSite._deletedPhotoIds || []);
+  const cachedPtById   = new Map((cachedSite.points || []).map(p => [p.id, p]));
+  const freshPtIds     = new Set((freshSite.points  || []).map(p => p.id));
+
+  // Points supprimés : présents dans le fresh mais absents du cache
+  freshSite.points = (freshSite.points || [])
+    .filter(pt => cachedPtById.has(pt.id))
+    .map(pt => {
+      const cached = cachedPtById.get(pt.id);
+      // Photos originales non supprimées — préférer la version cache (a imageId + métadonnées à jour)
+      const keptOriginals = pt.photos
+        .filter(ph => !deletedPhotoIds.has(ph.id))
+        .map(ph => cached.photos.find(c => c.id === ph.id) ?? ph);
+      // Photos ajoutées par l'utilisateur : imageId présent, pas de imageFile
+      const addedPhotos = cached.photos.filter(ph => ph.imageId && !ph.imageFile);
+      return { ...pt, ...cached, photos: [...keptOriginals, ...addedPhotos] };
+    });
+
+  // Points créés par l'utilisateur : dans le cache mais pas dans le .cado d'origine
+  for (const pt of cachedSite.points || []) {
+    if (!freshPtIds.has(pt.id)) freshSite.points.push(pt);
+  }
+
+  // Calques de dessin sur les étages
+  const cachedBldById = new Map((cachedSite.buildings || []).map(b => [b.id, b]));
+  for (const bld of freshSite.buildings || []) {
+    const cBld = cachedBldById.get(bld.id);
+    if (!cBld) continue;
+    const cFlById = new Map((cBld.floors || []).map(f => [f.id, f]));
+    for (const fl of bld.floors || []) {
+      const cFl = cFlById.get(fl.id);
+      if (cFl?.layers) fl.layers = cFl.layers;
+    }
+  }
+
+  // Calques de dessin sur les plans de site
+  const cachedSpById = new Map((cachedSite.sitePlans || []).map(s => [s.id, s]));
+  for (const sp of freshSite.sitePlans || []) {
+    const cSp = cachedSpById.get(sp.id);
+    if (cSp?.layers) sp.layers = cSp.layers;
+  }
+
+  // Calques de dessin sur la carte extérieure
+  if ((cachedSite.mapDrawingLayers || []).length) {
+    freshSite.mapDrawingLayers = cachedSite.mapDrawingLayers;
+  }
+}
+
+// Ouvre un fichier .cado via File System Access API (showOpenFilePicker) si disponible,
+// sinon via <input type="file"> classique. Retourne {file, handle} ou null si annulé.
+async function _pickCadoFile() {
+  if (window.showOpenFilePicker) {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        types: [{ description: 'Fichier CadoTour', accept: {
+          'application/octet-stream': ['.cado'],
+          'application/json':         ['.json'],
+        }}],
+        multiple: false,
+      });
+      return { file: await handle.getFile(), handle };
+    } catch (e) {
+      if (e.name === 'AbortError') return null;
+      // Navigateur partiellement compatible — fallback silencieux
+    }
+  }
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.cado,.json';
+    inp.onchange = e => resolve(e.target.files[0] ? { file: e.target.files[0], handle: null } : null);
+    inp.addEventListener('cancel', () => resolve(null));
+    inp.click();
+  });
 }
 
 function countSiteImages(site) {
@@ -244,6 +371,8 @@ async function _closeSiteZipSource(siteId) {
   if (!bundle) return;
   siteZipSources.delete(siteId);
   _modifiedZipSites.delete(siteId);
+  _zipSiteDeletedPhotos.delete(siteId);
+  imageStore.deleteZipHandle(siteId).catch(() => {});
   try { await bundle.reader.close(); } catch { /* swallow */ }
 }
 
@@ -275,6 +404,7 @@ let viewerGalleryIdx = 0;
 
 // ===== PENDING LOAD / NAVIGATION =====
 let pendingLoadFile    = null;
+let pendingLoadHandle  = null;
 let pendingNavigateUrl = null;
 
 // ===== PHOTO ADDITION =====
@@ -356,7 +486,8 @@ function showModal(id) {
 function hideModal(id) {
   document.getElementById(id).classList.add('hidden');
   const modalIds = ['modal-site-form','modal-add-photo','modal-add-floor',
-                    'modal-add-building','modal-add-siteplan','modal-step-prompt','modal-close-site','modal-edit-building'];
+                    'modal-add-building','modal-add-siteplan','modal-step-prompt','modal-close-site','modal-edit-building',
+                    'modal-restore-session'];
   const anyOpen = modalIds.some(
     mid => mid !== id && !document.getElementById(mid).classList.contains('hidden')
   );
@@ -993,7 +1124,7 @@ function clearStepBanner() {
 }
 
 // ===== LOAD / SAVE =====
-async function loadSiteFromFile(file) {
+async function loadSiteFromFile(file, handle = null) {
   try {
     const header = new Uint8Array(await file.slice(0, 2).arrayBuffer());
     const isZip  = header[0] === 0x50 && header[1] === 0x4B;
@@ -1002,6 +1133,8 @@ async function loadSiteFromFile(file) {
     if (isZip) {
       data = await _loadSiteFromZip(file);
       if (!data) return;
+      // Persiste le handle pour permettre le rechargement automatique au réveil
+      if (handle && data.id) imageStore.putZipHandle(data.id, handle).catch(() => {});
     } else {
       let text;
       try { text = await file.text(); } catch (e) { throw new Error('Lecture impossible : ' + e.message); }
@@ -1074,7 +1207,7 @@ async function _loadSiteFromZip(file) {
     // Si on recharge un site déjà ouvert, fermer son ancienne source ZIP.
     if (data.id && siteZipSources.has(data.id)) await _closeSiteZipSource(data.id);
     if (data.id) {
-      siteZipSources.set(data.id, { reader, entries: imageEntries });
+      siteZipSources.set(data.id, { reader, entries: imageEntries, filename: file.name });
       registeredSiteId = data.id;
     }
     success = true;
@@ -1642,9 +1775,10 @@ async function _doCloseSite(withSave) {
   updateTopBarButtons();
   if (state.viewMode !== 'map') switchViewMode('map');
 
-  const fileToLoad = pendingLoadFile;   pendingLoadFile    = null;
-  const urlToGo    = pendingNavigateUrl; pendingNavigateUrl = null;
-  if (fileToLoad) { loadSiteFromFile(fileToLoad); return; }
+  const fileToLoad   = pendingLoadFile;    pendingLoadFile    = null;
+  const handleToLoad = pendingLoadHandle;  pendingLoadHandle  = null;
+  const urlToGo      = pendingNavigateUrl; pendingNavigateUrl = null;
+  if (fileToLoad) { loadSiteFromFile(fileToLoad, handleToLoad); return; }
   if (urlToGo)    { window.location.href = urlToGo; }
 }
 
@@ -3011,6 +3145,12 @@ function deletePhotoFromActivePoint(photoId) {
   const removed = point.photos.splice(idx, 1)[0];
   if (removed?.imageId) imageStore.deleteImage(removed.imageId);
 
+  // Mémorise la suppression d'une photo originale du .cado pour le delta de restauration
+  if (removed?.imageFile && siteZipSources.has(site.id)) {
+    if (!_zipSiteDeletedPhotos.has(site.id)) _zipSiteDeletedPhotos.set(site.id, new Set());
+    _zipSiteDeletedPhotos.get(site.id).add(removed.id);
+  }
+
   if (point.lat != null) refreshPointMarker(point.id);
   else renderPlanMarkers();
 
@@ -3237,21 +3377,18 @@ function init() {
   drawing.initEvents();
 
   // ---- Top bar ----
-  document.getElementById('btn-load-site').addEventListener('click', () => {
-    const inp = document.createElement('input');
-    inp.type = 'file'; inp.accept = '.cado,.json';
-    inp.onchange = e => {
-      const file = e.target.files[0];
-      if (!file) return;
-      if (state.activeSiteId) {
-        pendingLoadFile = file;
-        document.getElementById('close-site-name').textContent = getActiveSite()?.name || 'ce site';
-        showModal('modal-close-site');
-      } else {
-        loadSiteFromFile(file);
-      }
-    };
-    inp.click();
+  document.getElementById('btn-load-site').addEventListener('click', async () => {
+    const picked = await _pickCadoFile();
+    if (!picked) return;
+    const { file, handle } = picked;
+    if (state.activeSiteId) {
+      pendingLoadFile   = file;
+      pendingLoadHandle = handle;
+      document.getElementById('close-site-name').textContent = getActiveSite()?.name || 'ce site';
+      showModal('modal-close-site');
+    } else {
+      loadSiteFromFile(file, handle);
+    }
   });
   document.getElementById('btn-save-site').addEventListener('click', saveSite);
   document.getElementById('btn-close-site').addEventListener('click', closeSite);
@@ -3267,8 +3404,80 @@ function init() {
   document.getElementById('btn-close-discard').addEventListener('click', () => _doCloseSite(false));
   document.getElementById('btn-close-cancel').addEventListener('click',  () => {
     pendingLoadFile    = null;
+    pendingLoadHandle  = null;
     pendingNavigateUrl = null;
     hideModal('modal-close-site');
+  });
+
+  // ---- Restore session modal ----
+  document.getElementById('btn-restore-confirm').addEventListener('click', async () => {
+    if (!_pendingRestore) return;
+    const { zipEntries, pureSites } = _pendingRestore;
+    _pendingRestore = null;
+    hideModal('modal-restore-session');
+
+    let firstSiteId = null;
+
+    // requestPermission() doit être appelé immédiatement dans le handler de clic
+    // (geste utilisateur). On demande toutes les permissions en parallèle.
+    const perms = await Promise.all(
+      zipEntries.map(({ handle }) =>
+        handle ? handle.requestPermission({ mode: 'read' }) : Promise.resolve('denied')
+      )
+    );
+
+    for (let i = 0; i < zipEntries.length; i++) {
+      const { cachedSite, handle } = zipEntries[i];
+      if (state.sites.find(s => s.id === cachedSite.id)) continue;
+      let restored = false;
+
+      if (handle && perms[i] === 'granted') {
+        try {
+          const freshData = await _loadSiteFromZip(await handle.getFile());
+          if (freshData) {
+            _applyZipDelta(freshData, cachedSite);
+            imageStore.putZipHandle(freshData.id, handle).catch(() => {});
+            state.sites.push(freshData);
+            addSiteMarker(freshData);
+            if (freshData.perimeter)   renderSitePerimeter(freshData);
+            if (freshData.accessArrow) renderAccessArrow(freshData);
+            if (!firstSiteId) firstSiteId = freshData.id;
+            restored = true;
+          }
+        } catch (e) { console.warn('Reload from handle failed:', e); }
+      }
+
+      if (!restored) {
+        // Fallback : restauration partielle depuis le snapshot
+        delete cachedSite._deletedPhotoIds;
+        delete cachedSite._cadoFilename;
+        await normalizeSite(cachedSite);
+        state.sites.push(cachedSite);
+        addSiteMarker(cachedSite);
+        if (cachedSite.perimeter)   renderSitePerimeter(cachedSite);
+        if (cachedSite.accessArrow) renderAccessArrow(cachedSite);
+        if (!firstSiteId) firstSiteId = cachedSite.id;
+      }
+    }
+
+    for (const data of pureSites) {
+      if (state.sites.find(s => s.id === data.id)) continue;
+      await normalizeSite(data);
+      state.sites.push(data);
+      addSiteMarker(data);
+      if (data.perimeter)   renderSitePerimeter(data);
+      if (data.accessArrow) renderAccessArrow(data);
+      if (!firstSiteId) firstSiteId = data.id;
+    }
+
+    if (firstSiteId) selectSite(firstSiteId);
+    updateTopBarButtons();
+  });
+
+  document.getElementById('btn-restore-discard').addEventListener('click', () => {
+    _pendingRestore = null;
+    clearCacheState();
+    hideModal('modal-restore-session');
   });
 
   // ---- Sidebar ----

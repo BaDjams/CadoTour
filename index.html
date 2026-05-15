@@ -387,6 +387,19 @@
   </div>
 </div>
 
+<!-- Restore session after accidental close -->
+<div id="modal-restore-session" class="modal hidden">
+  <div class="modal-box">
+    <h2>Session non sauvegardée</h2>
+    <p style="font-size:13px;color:var(--color-text-muted);margin-bottom:8px">Des modifications n'ont pas été sauvegardées avant la fermeture.</p>
+    <div id="restore-session-list" style="margin:10px 0;max-height:220px;overflow-y:auto;border:1px solid var(--color-border);border-radius:6px;padding:8px 10px"></div>
+    <div class="modal-actions" style="flex-direction:column;gap:8px;margin-top:14px">
+      <button id="btn-restore-confirm" class="btn-info">Restaurer la session</button>
+      <button id="btn-restore-discard" class="btn-danger">Ignorer — repartir de zéro</button>
+    </div>
+  </div>
+</div>
+
 <!-- Close site confirmation -->
 <div id="modal-close-site" class="modal hidden">
   <div class="modal-box">
