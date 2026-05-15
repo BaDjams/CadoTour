@@ -29,17 +29,24 @@ function scheduleCacheSave() {
 
 async function saveCacheNow() {
   if (!state.sites.length) return;
-  // Les sites en lazy load référencent une source ZIP sur disque qui ne peut
-  // pas être persistée. Si on cache leur état et que l'app redémarre, les
-  // photos seront orphelines (imageFile sans imageId, sans source). On exclut
-  // ces sites du cache : l'utilisateur rechargera son fichier au prochain
-  // démarrage (rapide grâce au lazy load lui-même).
-  const persistable = state.sites.filter(s => !siteZipSources.has(s.id));
-  if (!persistable.length) return;
   try {
     const db = await _openDB();
     const tx = db.transaction(DB_STORE, 'readwrite');
-    tx.objectStore(DB_STORE).put(JSON.stringify(persistable), 'sites');
+    // Pour les sites chargés depuis un .cado, les photos non encore ouvertes
+    // n'ont que imageFile (référence au ZIP, fermé après chargement) sans
+    // imageId. On les écarte de la sérialisation ; tout le reste (photos
+    // ouvertes, nouvelles photos, calques de dessin) est restaurable.
+    const serializable = state.sites.map(s => {
+      if (!siteZipSources.has(s.id)) return s;
+      return {
+        ...s,
+        points: (s.points || []).map(pt => ({
+          ...pt,
+          photos: (pt.photos || []).filter(ph => ph.imageId),
+        })),
+      };
+    });
+    tx.objectStore(DB_STORE).put(JSON.stringify(serializable), 'sites');
   } catch (e) { console.warn('Cache save failed:', e); }
 }
 
