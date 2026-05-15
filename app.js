@@ -19,11 +19,19 @@ import { ZipReader, BlobReader, BlobWriter, TextWriter } from 'https://cdn.jsdel
 // ===== CACHE (IndexedDB — pas de limite de taille) =====
 const DB_STORE = imageStore.STORE_STATE_NAME;
 let _saveTimer = null;
+// IDs des sites chargés depuis .cado qui ont été réellement modifiés depuis
+// leur chargement (ajout photo, dessin, suppression…). Seuls ceux-ci sont
+// persistés : un .cado ouvert sans modification n'a pas besoin de failsafe
+// car l'utilisateur peut simplement le recharger.
+const _modifiedZipSites = new Set();
 
 async function _openDB() { return imageStore.openDB(); }
 
 function scheduleCacheSave() {
   clearTimeout(_saveTimer);
+  // Marquer le site actif comme modifié s'il vient d'un .cado
+  const site = getActiveSite?.();
+  if (site && siteZipSources.has(site.id)) _modifiedZipSites.add(site.id);
   _saveTimer = setTimeout(saveCacheNow, 1500);
 }
 
@@ -32,20 +40,22 @@ async function saveCacheNow() {
   try {
     const db = await _openDB();
     const tx = db.transaction(DB_STORE, 'readwrite');
-    // Pour les sites chargés depuis un .cado, les photos non encore ouvertes
-    // n'ont que imageFile (référence au ZIP, fermé après chargement) sans
-    // imageId. On les écarte de la sérialisation ; tout le reste (photos
-    // ouvertes, nouvelles photos, calques de dessin) est restaurable.
-    const serializable = state.sites.map(s => {
-      if (!siteZipSources.has(s.id)) return s;
-      return {
-        ...s,
-        points: (s.points || []).map(pt => ({
-          ...pt,
-          photos: (pt.photos || []).filter(ph => ph.imageId),
-        })),
-      };
-    });
+    // Sites .cado : inclus uniquement s'ils ont été modifiés depuis le chargement.
+    // Les photos sans imageId (pas encore extraites du ZIP) sont écartées ;
+    // tout le reste (photos ouvertes/nouvelles, calques de dessin) est restaurable.
+    const serializable = state.sites
+      .filter(s => !siteZipSources.has(s.id) || _modifiedZipSites.has(s.id))
+      .map(s => {
+        if (!siteZipSources.has(s.id)) return s;
+        return {
+          ...s,
+          points: (s.points || []).map(pt => ({
+            ...pt,
+            photos: (pt.photos || []).filter(ph => ph.imageId),
+          })),
+        };
+      });
+    if (!serializable.length) return;
     tx.objectStore(DB_STORE).put(JSON.stringify(serializable), 'sites');
   } catch (e) { console.warn('Cache save failed:', e); }
 }
@@ -233,6 +243,7 @@ async function _closeSiteZipSource(siteId) {
   const bundle = siteZipSources.get(siteId);
   if (!bundle) return;
   siteZipSources.delete(siteId);
+  _modifiedZipSites.delete(siteId);
   try { await bundle.reader.close(); } catch { /* swallow */ }
 }
 
