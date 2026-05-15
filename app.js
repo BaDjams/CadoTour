@@ -16,6 +16,22 @@ import { initViewerSplitter, showResizer, hideResizer } from './splitter.js';
 import * as fflate from 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js';
 import { ZipReader, BlobReader, BlobWriter, TextWriter } from 'https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.7.55/+esm';
 
+// ===== MODE (creator vs tour/viewer) =====
+let tourMode = new URL(location).searchParams.has('tour');
+
+function setAppMode(isTour) {
+  tourMode = isTour;
+  document.body.classList.toggle('tour-mode', isTour);
+  document.getElementById('app-title').textContent = isTour ? 'CadoTour' : 'CadoCreator';
+  document.title = isTour ? 'CadoTour' : 'CadoCreator';
+  const url = new URL(location);
+  if (isTour) url.searchParams.set('tour', '1');
+  else url.searchParams.delete('tour');
+  history.replaceState(null, '', url);
+  renderSidebar();
+  updateTopBarButtons();
+}
+
 // ===== CACHE (IndexedDB — pas de limite de taille) =====
 const DB_STORE = imageStore.STORE_STATE_NAME;
 let _saveTimer = null;
@@ -30,6 +46,7 @@ let   _pendingRestore = null;            // données pré-chargées pour le moda
 async function _openDB() { return imageStore.openDB(); }
 
 function scheduleCacheSave() {
+  if (tourMode) return;
   clearTimeout(_saveTimer);
   // Marquer le site actif comme modifié s'il vient d'un .cado
   const site = getActiveSite?.();
@@ -144,8 +161,8 @@ function _countCachedDrawings(site) {
   const count = layers => (layers || []).forEach(l => n += (l.shapes || []).length);
   count(site.mapDrawingLayers);
   for (const bld of site.buildings || [])
-    for (const fl of bld.floors || []) count(fl.layers);
-  for (const sp of site.sitePlans || []) count(sp.layers);
+    for (const fl of bld.floors || []) count(fl.drawingLayers);
+  for (const sp of site.sitePlans || []) count(sp.drawingLayers);
   return n;
 }
 
@@ -160,10 +177,15 @@ function _applyZipDelta(freshSite, cachedSite) {
     .filter(pt => cachedPtById.has(pt.id))
     .map(pt => {
       const cached = cachedPtById.get(pt.id);
-      // Photos originales non supprimées — préférer la version cache (a imageId + métadonnées à jour)
+      // Photos originales non supprimées — overlay des métadonnées cache sur le ZIP frais.
+      // imageFile DOIT venir du ZIP frais pour que registerLazy() trouve l'entrée au moment de la sauvegarde.
       const keptOriginals = pt.photos
         .filter(ph => !deletedPhotoIds.has(ph.id))
-        .map(ph => cached.photos.find(c => c.id === ph.id) ?? ph);
+        .map(ph => {
+          const cachedPh = (cached.photos || []).find(c => c.id === ph.id);
+          if (!cachedPh) return ph;
+          return { ...ph, ...cachedPh, imageFile: ph.imageFile };
+        });
       // Photos ajoutées par l'utilisateur : imageId présent, pas de imageFile
       const addedPhotos = cached.photos.filter(ph => ph.imageId && !ph.imageFile);
       return { ...pt, ...cached, photos: [...keptOriginals, ...addedPhotos] };
@@ -182,7 +204,7 @@ function _applyZipDelta(freshSite, cachedSite) {
     const cFlById = new Map((cBld.floors || []).map(f => [f.id, f]));
     for (const fl of bld.floors || []) {
       const cFl = cFlById.get(fl.id);
-      if (cFl?.layers) fl.layers = cFl.layers;
+      if (cFl?.drawingLayers) fl.drawingLayers = cFl.drawingLayers;
     }
   }
 
@@ -190,7 +212,7 @@ function _applyZipDelta(freshSite, cachedSite) {
   const cachedSpById = new Map((cachedSite.sitePlans || []).map(s => [s.id, s]));
   for (const sp of freshSite.sitePlans || []) {
     const cSp = cachedSpById.get(sp.id);
-    if (cSp?.layers) sp.layers = cSp.layers;
+    if (cSp?.drawingLayers) sp.drawingLayers = cSp.drawingLayers;
   }
 
   // Calques de dessin sur la carte extérieure
@@ -374,6 +396,27 @@ async function _closeSiteZipSource(siteId) {
   _zipSiteDeletedPhotos.delete(siteId);
   imageStore.deleteZipHandle(siteId).catch(() => {});
   try { await bundle.reader.close(); } catch { /* swallow */ }
+}
+
+// Rouvre le lecteur ZIP depuis le handle IDB sans ré-extraire les images eagerly.
+// Utilisé à la sauvegarde quand le reader a été perdu (restauration partielle).
+async function _ensureZipSourceForSave(siteId) {
+  if (siteZipSources.has(siteId)) return;
+  const handle = await imageStore.getZipHandle(siteId);
+  if (!handle) return;
+  try {
+    const perm = await handle.requestPermission({ mode: 'read' });
+    if (perm !== 'granted') return;
+    const file = await handle.getFile();
+    const reader = new ZipReader(new BlobReader(file));
+    const rawEntries = await reader.getEntries();
+    const imageEntries = new Map();
+    for (const e of rawEntries) {
+      if (e.filename.startsWith('images/')) imageEntries.set(e.filename.slice(7), e);
+    }
+    siteZipSources.set(siteId, { reader, entries: imageEntries, filename: file.name });
+    _modifiedZipSites.add(siteId);
+  } catch (e) { console.warn('_ensureZipSourceForSave failed:', e); }
 }
 
 // ===== INTERACTION MODE =====
@@ -572,6 +615,7 @@ function onMapRightClick(e) {
   hideMapContextMenu();
 
   if (interactionMode) return;
+  if (tourMode) return;
 
   const latlng = e.latlng;
   const pt = e.containerPoint;
@@ -1057,6 +1101,7 @@ function renderAccessArrow(site) {
     .addTo(map)
     .on('contextmenu', e => {
       L.DomEvent.stopPropagation(e);
+      if (tourMode) return;
       showMapContextMenu(e.containerPoint, [
         { label: '↻ Orienter la flèche', action: () => startOrientAccessArrow(site) },
         { label: '✕ Supprimer la flèche', action: () => {
@@ -1436,8 +1481,14 @@ async function _collectImageMap(site) {
   for (const pt of site.points || []) {
     const is360 = pt.type === '360';
     for (const ph of pt.photos || []) {
-      if (ph.imageId) await register(ph.imageId, ph.imageFilename, true, is360);
-      else registerLazy(ph, is360);
+      if (ph.imageId) {
+        await register(ph.imageId, ph.imageFilename, true, is360);
+        // Fallback : si le blob IDB est absent (session différente, IDB purgé…)
+        // et qu'une entrée ZIP est disponible, on l'utilise pour ne pas perdre la photo.
+        if (!map.has(ph.imageId) && ph.imageFile) registerLazy(ph, is360);
+      } else {
+        registerLazy(ph, is360);
+      }
     }
   }
   return map;
@@ -1627,6 +1678,7 @@ async function _saveSiteAsZipLegacy(site, fname, onProgress, options = {}) {
 //   - Legacy (Safari / old browsers): builds full ZIP in memory, downloads via a.download.
 // Shows the file picker BEFORE the progress overlay in FSAA mode (better UX).
 async function _saveSiteCore(site, options = {}) {
+  await _ensureZipSourceForSave(site.id);
   const compress = options.compress !== false;
   const baseName = (site.name || 'site') + (compress ? '_opti' : '');
   const fname = baseName + '.cado';
@@ -1711,6 +1763,7 @@ async function saveSite() {
 function closeSite() {
   const site = getActiveSite();
   if (!site) return;
+  if (tourMode) { _doCloseSite(false); return; }
   document.getElementById('close-site-name').textContent = site.name || 'ce site';
   showModal('modal-close-site');
 }
@@ -1744,6 +1797,10 @@ async function _doCloseSite(withSave) {
   }
   // Libère la source ZIP du site (si en lazy load)
   await _closeSiteZipSource(site.id);
+
+  // Efface les calques de dessin de la carte (rendu Leaflet + objet site pour le cache)
+  site.mapDrawingLayers = [];
+  drawing.clearMapLayers();
 
   const siteId = site.id;
 
@@ -1868,7 +1925,7 @@ function addSiteMarker(site) {
     })
     .on('contextmenu', e => {
       L.DomEvent.stopPropagation(e);
-      if (interactionMode) return;
+      if (interactionMode || tourMode) return;
       hideMapContextMenu();
       showMapContextMenu(e.containerPoint, [
         { label: '⬡ Déplacer',        action: () => startMoveSite(site.id) },
@@ -2013,7 +2070,7 @@ function addBuildingMarker(building) {
     })
     .on('contextmenu', e => {
       L.DomEvent.stopPropagation(e);
-      if (interactionMode) return;
+      if (interactionMode || tourMode) return;
       showMapContextMenu(e.containerPoint, [
         { label: '⬡ Déplacer',              action: () => startMoveBuilding(building.id) },
         { label: '🗑 Supprimer ce bâtiment', action: () => deleteBuilding(building.id) },
@@ -2100,7 +2157,7 @@ function addPointMarker(point) {
     })
     .on('contextmenu', e => {
       L.DomEvent.stopPropagation(e);
-      if (interactionMode) return;
+      if (interactionMode || tourMode) return;
       hideMapContextMenu();
       const n = point.photos.length;
       const delLabel = n > 1
@@ -2327,7 +2384,9 @@ function renderSidebar() {
   if (!site) {
     const hint = document.createElement('div');
     hint.style.cssText = 'padding:16px 12px;color:var(--color-text-muted);font-size:12px;line-height:1.5';
-    hint.textContent = 'Clic droit sur la carte pour créer un site, ou chargez un fichier .cado.';
+    hint.textContent = tourMode
+      ? 'Chargez un fichier .cado pour démarrer la visite.'
+      : 'Clic droit sur la carte pour créer un site, ou chargez un fichier .cado.';
     nav.appendChild(hint);
     return;
   }
@@ -2348,16 +2407,18 @@ function renderSidebar() {
       appendNavItem(nav, {
         icon: '🗃', label: sp.name,
         active: state.activeSitePlanId === sp.id,
-        onDelete: () => deleteSitePlan(sp.id),
+        onDelete: tourMode ? null : () => deleteSitePlan(sp.id),
         onClick: () => selectSitePlan(sp.id),
       });
     });
 
-    const addSP = document.createElement('button');
-    addSP.className = 'nav-add-btn';
-    addSP.textContent = '+ Ajouter un plan de site';
-    addSP.addEventListener('click', () => openAddSitePlanModal());
-    nav.appendChild(addSP);
+    if (!tourMode) {
+      const addSP = document.createElement('button');
+      addSP.className = 'nav-add-btn';
+      addSP.textContent = '+ Ajouter un plan de site';
+      addSP.addEventListener('click', () => openAddSitePlanModal());
+      nav.appendChild(addSP);
+    }
   }
 
   const bldDiv = document.createElement('div');
@@ -2368,18 +2429,23 @@ function renderSidebar() {
   (site.buildings || []).forEach(building => {
     const bh = document.createElement('div');
     bh.className = 'nav-building-header';
-    bh.innerHTML = `<span class="nav-bld-icon">${renderIcon(building.icon || 'building')}</span>
-                    <span style="flex:1">${escapeHtml(building.name)}</span>
-                    <button class="nav-bld-edit" title="Modifier">⚙</button>
-                    <button class="nav-bld-del" title="Supprimer">🗑</button>`;
-    bh.querySelector('.nav-bld-edit').addEventListener('click', e => {
-      e.stopPropagation();
-      openEditBuildingModal(building.id);
-    });
-    bh.querySelector('.nav-bld-del').addEventListener('click', e => {
-      e.stopPropagation();
-      deleteBuilding(building.id);
-    });
+    if (tourMode) {
+      bh.innerHTML = `<span class="nav-bld-icon">${renderIcon(building.icon || 'building')}</span>
+                      <span style="flex:1">${escapeHtml(building.name)}</span>`;
+    } else {
+      bh.innerHTML = `<span class="nav-bld-icon">${renderIcon(building.icon || 'building')}</span>
+                      <span style="flex:1">${escapeHtml(building.name)}</span>
+                      <button class="nav-bld-edit" title="Modifier">⚙</button>
+                      <button class="nav-bld-del" title="Supprimer">🗑</button>`;
+      bh.querySelector('.nav-bld-edit').addEventListener('click', e => {
+        e.stopPropagation();
+        openEditBuildingModal(building.id);
+      });
+      bh.querySelector('.nav-bld-del').addEventListener('click', e => {
+        e.stopPropagation();
+        deleteBuilding(building.id);
+      });
+    }
     nav.appendChild(bh);
 
     building.floors.forEach(floor => {
@@ -2387,16 +2453,18 @@ function renderSidebar() {
         icon: '📐', label: floor.name,
         active: state.activeFloorId === floor.id && state.activeBuildingId === building.id,
         sub: true,
-        onDelete: () => deleteFloor(building.id, floor.id),
+        onDelete: tourMode ? null : () => deleteFloor(building.id, floor.id),
         onClick: () => selectFloor(building.id, floor.id),
       });
     });
 
-    const addFloorBtn = document.createElement('button');
-    addFloorBtn.className = 'nav-add-btn nav-add-sub';
-    addFloorBtn.textContent = '+ Ajouter un niveau';
-    addFloorBtn.addEventListener('click', () => openAddFloorModal(building.id));
-    nav.appendChild(addFloorBtn);
+    if (!tourMode) {
+      const addFloorBtn = document.createElement('button');
+      addFloorBtn.className = 'nav-add-btn nav-add-sub';
+      addFloorBtn.textContent = '+ Ajouter un niveau';
+      addFloorBtn.addEventListener('click', () => openAddFloorModal(building.id));
+      nav.appendChild(addFloorBtn);
+    }
   });
 }
 
@@ -2740,7 +2808,7 @@ function renderPlanMarkers() {
     g.addEventListener('contextmenu', e => {
       e.preventDefault();
       e.stopPropagation();
-      if (!planMovePointId) showPlanPointContextMenu(e, point);
+      if (!planMovePointId && !tourMode) showPlanPointContextMenu(e, point);
     });
     svg.appendChild(g);
   });
@@ -2957,6 +3025,7 @@ function initPlanEvents() {
 
   viewport.addEventListener('contextmenu', e => {
     e.preventDefault();
+    if (tourMode) return;
     const site = getActiveSite();
     if (!site || (!state.activeFloorId && !state.activeSitePlanId)) return;
     if (plan.dragging || dragMoved) return;
@@ -3212,8 +3281,10 @@ async function _renderViewerPhoto(point, photo) {
 
   document.getElementById('edit-photo-title').value = photo.title || '';
   document.getElementById('edit-photo-desc').value  = photo.description || '';
+  document.getElementById('viewer-photo-title').textContent = photo.title || '';
+  document.getElementById('viewer-photo-desc').textContent  = photo.description || '';
 
-  document.getElementById('bearing-row').classList.remove('hidden');
+  if (!tourMode) document.getElementById('bearing-row').classList.remove('hidden');
   document.getElementById('edit-photo-bearing').value = Math.round(point.bearing ?? 0);
 
   const btnDlPhoto = document.getElementById('btn-download-photo');
@@ -3376,6 +3447,9 @@ function init() {
   initPlanEvents();
   drawing.initEvents();
 
+  // ---- Initial mode (URL ?tour param) ----
+  if (tourMode) document.body.classList.add('tour-mode');
+
   // ---- Top bar ----
   document.getElementById('btn-load-site').addEventListener('click', async () => {
     const picked = await _pickCadoFile();
@@ -3384,21 +3458,15 @@ function init() {
     if (state.activeSiteId) {
       pendingLoadFile   = file;
       pendingLoadHandle = handle;
-      document.getElementById('close-site-name').textContent = getActiveSite()?.name || 'ce site';
-      showModal('modal-close-site');
+      closeSite(); // shows modal in creator mode, calls _doCloseSite(false) in tour mode
     } else {
       loadSiteFromFile(file, handle);
     }
   });
   document.getElementById('btn-save-site').addEventListener('click', saveSite);
   document.getElementById('btn-close-site').addEventListener('click', closeSite);
-  document.getElementById('link-cadotour').addEventListener('click', e => {
-    if (!state.activeSiteId) return;
-    e.preventDefault();
-    pendingNavigateUrl = 'cadotour.html';
-    document.getElementById('close-site-name').textContent = getActiveSite()?.name || 'ce site';
-    showModal('modal-close-site');
-  });
+  document.getElementById('btn-switch-to-tour').addEventListener('click', () => setAppMode(true));
+  document.getElementById('btn-switch-to-creator').addEventListener('click', () => setAppMode(false));
 
   document.getElementById('btn-close-save').addEventListener('click',    () => _doCloseSite(true));
   document.getElementById('btn-close-discard').addEventListener('click', () => _doCloseSite(false));
@@ -3437,6 +3505,7 @@ function init() {
           if (freshData) {
             _applyZipDelta(freshData, cachedSite);
             imageStore.putZipHandle(freshData.id, handle).catch(() => {});
+            _modifiedZipSites.add(freshData.id);
             state.sites.push(freshData);
             addSiteMarker(freshData);
             if (freshData.perimeter)   renderSitePerimeter(freshData);
@@ -3447,8 +3516,30 @@ function init() {
         } catch (e) { console.warn('Reload from handle failed:', e); }
       }
 
+      if (!restored && cachedSite._cadoFilename) {
+        // Pas de handle FSAA (Safari / permissions révoquées) : demander à l'utilisateur de
+        // re-sélectionner le .cado manuellement, puis appliquer le delta normalement.
+        try {
+          const picked = await _pickCadoFile();
+          if (picked?.file) {
+            const freshData = await _loadSiteFromZip(picked.file);
+            if (freshData && freshData.id === cachedSite.id) {
+              _applyZipDelta(freshData, cachedSite);
+              if (picked.handle) imageStore.putZipHandle(freshData.id, picked.handle).catch(() => {});
+              _modifiedZipSites.add(freshData.id);
+              state.sites.push(freshData);
+              addSiteMarker(freshData);
+              if (freshData.perimeter)   renderSitePerimeter(freshData);
+              if (freshData.accessArrow) renderAccessArrow(freshData);
+              if (!firstSiteId) firstSiteId = freshData.id;
+              restored = true;
+            }
+          }
+        } catch (e) { console.warn('Manual restore failed:', e); }
+      }
+
       if (!restored) {
-        // Fallback : restauration partielle depuis le snapshot
+        // Fallback final : restauration partielle depuis le snapshot (sans photos ZIP)
         delete cachedSite._deletedPhotoIds;
         delete cachedSite._cadoFilename;
         await normalizeSite(cachedSite);
@@ -3627,10 +3718,15 @@ function init() {
     else document.exitFullscreen?.();
   });
   const _onFsChange = () => {
-    const btn = document.getElementById('btn-viewer-fullscreen');
-    if (document.fullscreenElement) {
+    const wrap = document.getElementById('viewer-media-wrap');
+    const btn  = document.getElementById('btn-viewer-fullscreen');
+    const inFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    wrap.classList.toggle('is-fullscreen', inFs);
+    if (inFs) {
       btn.textContent = '✕';
       btn.title = 'Quitter le plein écran';
+      // Pannellum conserve la taille de son canvas interne — forcer le recalcul
+      if (pannellumViewer) setTimeout(() => pannellumViewer.resize(), 50);
     } else {
       btn.textContent = '⛶';
       btn.title = 'Plein écran';
@@ -3657,10 +3753,12 @@ function init() {
     updatePhotoFileList();
   });
 
-  // ---- Cache auto-save (IndexedDB) ----
-  setInterval(() => { if (state.sites.length) saveCacheNow(); }, 4000);
-  window.addEventListener('beforeunload', () => { if (state.sites.length) saveCacheNow(); });
-  checkCacheRestore();
+  // ---- Cache auto-save (IndexedDB) — désactivé en tour mode ----
+  if (!tourMode) {
+    setInterval(() => { if (state.sites.length) saveCacheNow(); }, 4000);
+    window.addEventListener('beforeunload', () => { if (state.sites.length) saveCacheNow(); });
+    checkCacheRestore();
+  }
 
   // ---- Menu mobile ----
   const btnMobileMenu = document.getElementById('btn-mobile-menu');

@@ -319,7 +319,11 @@ export function initDrawing(deps) {
         _updateToolbarState();
       } else {
         if (mapDrawing) cancelMapDrawing();
-        _startMapTool(t);
+        const newTool = tool === t ? null : t;
+        tool = newTool;
+        _clearMapHandles();
+        _updateToolbarState();
+        if (newTool) _startMapTool(newTool);
       }
     }
   }
@@ -664,6 +668,7 @@ export function initDrawing(deps) {
       if (!layer) return;
       const pts = context === 'plan' ? [{ x: coordA, y: coordB }] : [{ lat: coordA, lon: coordB }];
       const shape = { id: uid(), type: 'text', color, strokeWidth: textOutline, outlineColor, points: pts, text, fontSize };
+      if (context === 'map') shape.zoomRef = Math.round(getMap()?.getZoom() ?? 15);
       layer.shapes.push(shape);
       if (context === 'plan') onRefreshPlan();
       else renderMapLayers();
@@ -774,8 +779,8 @@ export function initDrawing(deps) {
       drawHead(pts[pts.length - 1], pts[pts.length - 2]);
       if (shape.doubleArrow) drawHead(pts[0], pts[1]);
     } else if (shape.type === 'text' && pts.length >= 1) {
-      const fs  = (shape.fontSize || 14) * strokeScale;
-      const ow  = (shape.strokeWidth ?? 2) * strokeScale;
+      const fs  = shape.fontSize || 14;
+      const ow  = shape.strokeWidth ?? 2;
       const oc  = shape.outlineColor || 'rgba(0,0,0,0.65)';
       c.font      = `600 ${fs}px "Segoe UI", system-ui, sans-serif`;
       c.fillStyle = col;
@@ -923,6 +928,9 @@ export function initDrawing(deps) {
     });
     document.getElementById('btn-delete-selected-shape').addEventListener('click', deleteSelectedShape);
     document.getElementById('btn-download-plan-annotated').addEventListener('click', downloadAnnotatedPlan);
+
+    const mapObj = getMap();
+    if (mapObj) mapObj.on('zoomend', renderMapLayers);
   }
 
   // ===== MAP: LAYER RENDERING =====
@@ -967,7 +975,11 @@ export function initDrawing(deps) {
     } else if (shape.type === 'arrow' && ll.length >= 2) {
       _addMapArrow(shape, lg, layerId);
     } else if (shape.type === 'text' && ll.length >= 1) {
-      const fs  = shape.fontSize || 14;
+      const baseFontSize = shape.fontSize || 14;
+      const currentZoom  = map ? map.getZoom() : (shape.zoomRef ?? 15);
+      const fs = shape.zoomRef != null
+        ? Math.max(6, Math.round(baseFontSize * Math.pow(2, currentZoom - shape.zoomRef)))
+        : baseFontSize;
       const ow  = shape.strokeWidth ?? 2;
       const oc  = shape.outlineColor || '#000000';
       const shadow = `0 0 ${ow * 1.5}px ${escapeAttr(oc)}, 0 0 ${ow * 3}px ${escapeAttr(oc)}`;
