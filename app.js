@@ -10,6 +10,7 @@ import {
 } from './shared.js';
 import { initDrawing } from './drawing.js';
 import { SITE_ICONS, BUILDING_ICONS, renderIcon } from './icons.js';
+import { ACCESS_ARROWS, ACCESS_ARROW_KEYS, DEFAULT_SITE_ACCESS_ARROW, accessArrowSrc, accessArrowAspect } from './accessArrows.js';
 import * as imageStore from './imageStore.js';
 import * as progress from './progress.js';
 import { initViewerSplitter, showResizer, hideResizer } from './splitter.js';
@@ -433,6 +434,7 @@ let perimeterPolyline = null;
 let perimeterRubberBand = null;
 let perimeterFirstMarker = null;
 let orientLine       = null;
+let orientAccessArrowSite = null;
 
 // ===== FLOOR PLAN =====
 let plan = { img: null, scale: 1, offsetX: 0, offsetY: 0, dragging: false, dragStart: null };
@@ -607,7 +609,7 @@ function onMapClick(e) {
   if (interactionMode === 'move-building')  { commitMoveBuilding(e.latlng); return; }
   if (interactionMode === 'move-site')      { commitMoveSite(e.latlng);     return; }
   if (interactionMode === 'map-drawing')    { drawing.addMapPoint(e.latlng); return; }
-  if (interactionMode === 'orient-access-arrow') return;
+  if (interactionMode === 'orient-access-arrow') { commitOrientAccessArrow(e.latlng); return; }
   hideMapContextMenu();
 }
 
@@ -643,6 +645,15 @@ function onMapMousemove(e) {
     const lastPt = perimeterPoints[perimeterPoints.length - 1];
     perimeterRubberBand = L.polyline([lastPt, [e.latlng.lat, e.latlng.lng]], {
       color: 'red', dashArray: '4 3', weight: 1.5, opacity: 0.5,
+    }).addTo(map);
+    return;
+  }
+  if (interactionMode === 'orient-access-arrow') {
+    const a = orientAccessArrowSite?.accessArrow;
+    if (!a) return;
+    if (orientLine) { orientLine.remove(); orientLine = null; }
+    orientLine = L.polyline([[a.lat, a.lon], [e.latlng.lat, e.latlng.lng]], {
+      color: '#ffd700', weight: 2, dashArray: '5 4', opacity: 0.8,
     }).addTo(map);
     return;
   }
@@ -843,6 +854,33 @@ function renderSfPerimeterSection(site) {
     });
   }
   makeGroup('Flèche d\'accès principal', arrowBtns);
+
+  if (site.accessArrow) {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:10px;display:flex;align-items:center;gap:8px';
+    const cur = site.accessArrow.icon || DEFAULT_SITE_ACCESS_ARROW;
+    const prev = document.createElement('img');
+    prev.src = accessArrowSrc(cur);
+    prev.alt = '';
+    prev.style.cssText = 'height:22px;width:auto;max-width:48px;object-fit:contain';
+    const sel = document.createElement('select');
+    sel.className = 'input-field';
+    sel.style.cssText = 'flex:1;padding:4px';
+    ACCESS_ARROW_KEYS.forEach(k => {
+      const o = document.createElement('option');
+      o.value = k; o.textContent = ACCESS_ARROWS[k].label;
+      if (k === cur) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.addEventListener('change', () => {
+      site.accessArrow.icon = sel.value;
+      prev.src = accessArrowSrc(sel.value);
+      renderAccessArrow(site);
+    });
+    wrap.appendChild(prev);
+    wrap.appendChild(sel);
+    section.appendChild(wrap);
+  }
 }
 
 function openSiteForm(siteId, lat, lon, address) {
@@ -967,7 +1005,7 @@ function startPerimeterDraw(siteId) {
 
   document.getElementById('map').classList.add('map-cursor-crosshair');
   setStepBanner(
-    'Cliquez pour ajouter des points. Cliquez près du point de départ (⬤) pour fermer.',
+    'Cliquez pour ajouter des points. Double-clic pour fermer.',
     [
       { label: 'Fermer le périmètre', primary: true,  action: finishPerimeter },
       { label: 'Annuler',             primary: false, action: cancelPerimeter },
@@ -975,6 +1013,21 @@ function startPerimeterDraw(siteId) {
   );
 
   map.on('mousemove', onMapMousemove);
+  map.on('dblclick',  _onPerimeterDblclick);
+}
+
+function _onPerimeterDblclick(e) {
+  L.DomEvent.stopPropagation(e);
+  // Le double-clic Leaflet émet deux 'click' avant le 'dblclick' — le dernier point
+  // ajouté est un doublon du précédent ; on le supprime avant de fermer.
+  if (perimeterPoints.length >= 2) {
+    const a  = perimeterPoints[perimeterPoints.length - 1];
+    const b  = perimeterPoints[perimeterPoints.length - 2];
+    const pa = map.latLngToContainerPoint(a);
+    const pb = map.latLngToContainerPoint(b);
+    if (Math.hypot(pa.x - pb.x, pa.y - pb.y) < 10) perimeterPoints.pop();
+  }
+  finishPerimeter();
 }
 
 function addPerimeterPoint(latlng) {
@@ -1007,6 +1060,7 @@ function addPerimeterPoint(latlng) {
 
 function finishPerimeter() {
   map.off('mousemove', onMapMousemove);
+  map.off('dblclick',  _onPerimeterDblclick);
   clearStepBanner();
   document.getElementById('map').classList.remove('map-cursor-crosshair');
 
@@ -1027,6 +1081,7 @@ function finishPerimeter() {
 
 function cancelPerimeter() {
   map.off('mousemove', onMapMousemove);
+  map.off('dblclick',  _onPerimeterDblclick);
   clearStepBanner();
   document.getElementById('map').classList.remove('map-cursor-crosshair');
   if (perimeterRubberBand) { perimeterRubberBand.remove(); perimeterRubberBand = null; }
@@ -1065,7 +1120,7 @@ function placeAccessArrow(latlng) {
 
   const site = state.sites.find(s => s.id === interactionSiteId);
   if (site) {
-    site.accessArrow = { lat: latlng.lat, lon: latlng.lng, bearing: 0 };
+    site.accessArrow = { lat: latlng.lat, lon: latlng.lng, bearing: 0, icon: site.accessArrow?.icon || DEFAULT_SITE_ACCESS_ARROW };
     renderAccessArrow(site);
   }
 
@@ -1096,7 +1151,7 @@ function renderAccessArrow(site) {
   if (site.accessArrowHidden) return;
 
   const a = site.accessArrow;
-  const icon = makeAccessArrowIcon(a.bearing);
+  const icon = makeAccessArrowIcon(a.bearing, a.icon);
 
   accessArrowMarker = L.marker([a.lat, a.lon], { icon })
     .addTo(map)
@@ -1113,39 +1168,55 @@ function renderAccessArrow(site) {
     });
 }
 
-function makeAccessArrowIcon(bearing) {
-  const rot = bearing || 0;
-  const svg = `<svg width="32" height="32" viewBox="-16 -16 32 32" style="transform:rotate(${rot}deg);transform-origin:center;overflow:visible">
-    <polygon points="0,-14 -6,-2 0,-6 6,-2" fill="#ffd700" stroke="#fff" stroke-width="1.5"/>
-    <circle r="5" fill="#ffd700" stroke="#fff" stroke-width="1.5"/>
-  </svg>`;
+function makeAccessArrowIcon(bearing, iconKey) {
+  const key = iconKey || DEFAULT_SITE_ACCESS_ARROW;
+  // L'image source pointe vers l'est ; bearing 0 = nord → rotation = bearing - 90°.
+  const rot = (bearing || 0) - 90;
+  const w = 48;
+  const h = Math.round(w / accessArrowAspect(key));
+  const html = `<img src="${accessArrowSrc(key)}" width="${w}" height="${h}" alt="" draggable="false"
+    style="transform:rotate(${rot}deg);transform-origin:center;display:block"/>`;
   return L.divIcon({
     className: 'access-arrow-marker',
-    html: svg,
-    iconSize: [32, 32],
-    iconAnchor: [16, 16],
+    html,
+    iconSize: [w, h],
+    iconAnchor: [w / 2, h / 2],
   });
 }
 
 function startOrientAccessArrow(site) {
+  if (!site?.accessArrow) return;
   interactionMode = 'orient-access-arrow';
-
-  const cancel = () => { clearStepBanner(); interactionMode = null; map.off('click', handler); };
-  const handler = e => {
-    const dx = e.latlng.lng - site.accessArrow.lon;
-    const dy = e.latlng.lat - site.accessArrow.lat;
-    site.accessArrow.bearing = ((Math.atan2(dx, dy) * 180 / Math.PI) + 360) % 360;
-    renderAccessArrow(site);
-    clearStepBanner();
-    interactionMode = null;
-    map.off('click', handler);
-  };
-
+  orientAccessArrowSite = site;
+  map.on('mousemove', onMapMousemove);
   setStepBanner(
     'Cliquez sur la carte pour indiquer la direction de la flèche d\'accès.',
-    [{ label: 'Annuler', primary: false, action: cancel }]
+    [{ label: 'Annuler', primary: false, action: cancelOrientAccessArrow }]
   );
-  map.on('click', handler);
+}
+
+function commitOrientAccessArrow(latlng) {
+  clearStepBanner();
+  map.off('mousemove', onMapMousemove);
+  if (orientLine) { orientLine.remove(); orientLine = null; }
+  const site = orientAccessArrowSite;
+  if (site?.accessArrow) {
+    const dx = latlng.lng - site.accessArrow.lon;
+    const dy = latlng.lat - site.accessArrow.lat;
+    site.accessArrow.bearing = ((Math.atan2(dx, dy) * 180 / Math.PI) + 360) % 360;
+    renderAccessArrow(site);
+    scheduleCacheSave();
+  }
+  interactionMode = null;
+  orientAccessArrowSite = null;
+}
+
+function cancelOrientAccessArrow() {
+  clearStepBanner();
+  map.off('mousemove', onMapMousemove);
+  if (orientLine) { orientLine.remove(); orientLine = null; }
+  interactionMode = null;
+  orientAccessArrowSite = null;
 }
 
 // ===== STEP BANNER =====
@@ -3756,7 +3827,7 @@ function init() {
       else if (interactionMode === 'orient-point')         cancelOrientPoint();
       else if (interactionMode === 'move-building')        cancelMoveBuilding();
       else if (interactionMode === 'move-site')            cancelMoveSite();
-      else if (interactionMode === 'orient-access-arrow') { clearStepBanner(); interactionMode = null; }
+      else if (interactionMode === 'orient-access-arrow')  cancelOrientAccessArrow();
       else if (drawing.isPlanDrawing)                        drawing.cancelPlanDrawing();
       else if (interactionMode === 'map-drawing')          drawing.cancelMapDrawing();
       else if (drawing.tool) drawing.setTool(null);

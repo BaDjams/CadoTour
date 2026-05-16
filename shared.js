@@ -1,6 +1,7 @@
 // shared.js — fonctions communes à CadoCreator (app.js) et CadoTour (cadotour.js)
 
 import { renderIcon } from './icons.js';
+import { accessArrowSrc, accessArrowAspect } from './accessArrows.js';
 
 export function escapeHtml(s) {
   return String(s ?? '')
@@ -167,6 +168,20 @@ export function planShapeToSvgG(shape, plan) {
     text.setAttribute('stroke-linejoin', 'round');
     text.textContent = shape.text || '';
     g.appendChild(text);
+  } else if (shape.type === 'access' && pts.length >= 1) {
+    const anchor = pts[0];
+    const dir = pts[1] || { x: anchor.x, y: anchor.y - 1 };
+    const angle = Math.atan2(dir.y - anchor.y, dir.x - anchor.x) * 180 / Math.PI;
+    const w = (shape.size || 48) * plan.scale;
+    const h = w / accessArrowAspect(shape.iconKey);
+    const img = S('image');
+    img.setAttribute('href', accessArrowSrc(shape.iconKey));
+    img.setAttribute('x', anchor.x - w / 2);
+    img.setAttribute('y', anchor.y - h / 2);
+    img.setAttribute('width', w);
+    img.setAttribute('height', h);
+    img.setAttribute('transform', `rotate(${angle} ${anchor.x} ${anchor.y})`);
+    g.appendChild(img);
   } else {
     return null;
   }

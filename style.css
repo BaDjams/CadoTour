@@ -1248,6 +1248,17 @@ select.drawing-stroke-input {
   padding: 3px 2px;
   cursor: pointer;
 }
+select#drawing-access-icon { width: 120px; }
+.drawing-access-preview {
+  height: 22px;
+  width: auto;
+  max-width: 44px;
+  object-fit: contain;
+  background: var(--color-surface2);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 2px;
+}
 
 /* SVG drawing shapes in plan overlay */
 .drawing-shape { cursor: default; }
@@ -1290,7 +1301,7 @@ select.drawing-stroke-input {
   font-family: 'Segoe UI', system-ui, sans-serif;
   font-weight: 600;
   white-space: nowrap;
-  text-shadow: 0 0 4px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,1);
+  user-select: none;
   pointer-events: none;
   line-height: 1;
 }

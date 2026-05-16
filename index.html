@@ -108,6 +108,7 @@
             <button class="draw-tool-btn" data-tool="arrow" title="Flèche (2 clics)">→</button>
             <button class="draw-tool-btn" data-tool="circle" title="Cercle (2 clics)">○</button>
             <button class="draw-tool-btn" data-tool="text" title="Texte (1 clic)">T</button>
+            <button class="draw-tool-btn" data-tool="access" title="Accès (clic position + clic direction)">⮕</button>
           </div>
           <div class="draw-opts-row">
             <!-- Always: color -->
@@ -128,6 +129,10 @@
             </select>
             <input type="number" id="drawing-text-outline" value="2" min="0" max="20" class="drawing-stroke-input hidden" title="Épaisseur du contour" />
             <input type="color" id="drawing-outline-color" value="#000000" class="hidden" title="Couleur du contour" />
+            <!-- Access tool: icon picker + size -->
+            <img id="drawing-access-preview" class="drawing-access-preview hidden" alt="" />
+            <select id="drawing-access-icon" class="drawing-stroke-input hidden" title="Type d'accès"></select>
+            <input type="number" id="drawing-access-size" value="48" min="12" max="240" class="drawing-stroke-input hidden" title="Taille (px)" />
             <button id="btn-edit-text-shape" class="btn-sm hidden" title="Modifier le texte">✏ Texte</button>
             <button id="btn-delete-selected-shape" class="btn-danger btn-sm hidden" title="Supprimer la forme sélectionnée">🗑</button>
           </div>

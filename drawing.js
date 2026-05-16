@@ -7,6 +7,7 @@
 //   // then call drawing.renderPanel(), drawing.renderPlanLayers(svg), etc.
 
 import { hexToRgba, planShapeToSvgG, escapeHtml, escapeAttr } from './shared.js';
+import { ACCESS_ARROWS, ACCESS_ARROW_KEYS, DEFAULT_SITE_ACCESS_ARROW, accessArrowSrc, accessArrowAspect } from './accessArrows.js';
 
 /**
  * deps = {
@@ -49,6 +50,9 @@ export function initDrawing(deps) {
   let doubleArrow        = false;
   let outlineColor       = '#000000';
   let textOutline        = 2;
+  let accessIconKey      = DEFAULT_SITE_ACCESS_ARROW;
+  let accessSize         = 48;
+  let lastAccessBearing  = 0;  // radians, repère écran (image vers l'est = 0) ; réutilisé au double-clic
   let planDrawing        = false;
   let planPoints         = [];    // [{x, y}] image-space pixels
   let planSelShapeId     = null;
@@ -248,9 +252,10 @@ export function initDrawing(deps) {
       btn.classList.toggle('active', isCurrentTool || isSelectedShapeType);
     });
 
-    const isLine  = displayType ? LINE_TOOLS.has(displayType) : false;
-    const isText  = displayType === 'text';
-    const isArrow = displayType === 'arrow';
+    const isLine   = displayType ? LINE_TOOLS.has(displayType) : false;
+    const isText   = displayType === 'text';
+    const isArrow  = displayType === 'arrow';
+    const isAccess = displayType === 'access';
 
     const source = selShape && tool === 'select' ? selShape : null;
     const c   = source ? (source.color        || '#e63946')  : color;
@@ -275,6 +280,27 @@ export function initDrawing(deps) {
     document.getElementById('drawing-font-size').classList.toggle('hidden',          !isText);
     document.getElementById('drawing-text-outline').classList.toggle('hidden',       !isText);
     document.getElementById('drawing-outline-color').classList.toggle('hidden',      !isText);
+
+    // ----- Access tool: icon picker + size -----
+    const accSel  = document.getElementById('drawing-access-icon');
+    const accSize = document.getElementById('drawing-access-size');
+    const accPrev = document.getElementById('drawing-access-preview');
+    if (accSel && !accSel.options.length) {
+      ACCESS_ARROW_KEYS.forEach(k => {
+        const o = document.createElement('option');
+        o.value = k; o.textContent = ACCESS_ARROWS[k].label;
+        accSel.appendChild(o);
+      });
+    }
+    const ak  = source ? (source.iconKey || accessIconKey) : accessIconKey;
+    const asz = source ? (source.size    || accessSize)    : accessSize;
+    if (accSel)  accSel.value = ak;
+    if (accSize) accSize.value = asz;
+    if (accPrev) accPrev.src = accessArrowSrc(ak);
+    accSel?.classList.toggle('hidden', !isAccess);
+    accSize?.classList.toggle('hidden', !isAccess);
+    accPrev?.classList.toggle('hidden', !isAccess);
+    document.getElementById('drawing-color').classList.toggle('hidden', isAccess);
 
     const hasSel = !!(planSelShapeId || mapSelShapeId);
     const hasSelText = hasSel && isText;
@@ -314,6 +340,7 @@ export function initDrawing(deps) {
       setTool(tool === t ? null : t);
     } else if (getViewMode() === 'map') {
       if (t === 'select') {
+        if (mapDrawing) cancelMapDrawing();   // stoppe l'enchaînement (ex. outil Accès)
         tool = tool === 'select' ? null : 'select';
         if (tool === null) _clearMapHandles();
         _updateToolbarState();
@@ -378,6 +405,50 @@ export function initDrawing(deps) {
 
   function _renderPlanHandles(svg, shape) {
     const plan = getPlan();
+
+    if (shape.type === 'access') {
+      const hg = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      hg.setAttribute('class', 'drawing-handles');
+      const a = shape.points[0];
+      const dir = shape.points[1] || { x: a.x + 1, y: a.y };
+      const bearing = Math.atan2(dir.y - a.y, dir.x - a.x);
+      const ax = a.x * plan.scale + plan.offsetX;
+      const ay = a.y * plan.scale + plan.offsetY;
+      const HD = 40;  // distance écran fixe de la poignée de rotation
+      const mk = (cx, cy, r, cursor, cls) => {
+        const h = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        h.setAttribute('cx', cx); h.setAttribute('cy', cy); h.setAttribute('r', r);
+        h.setAttribute('fill', cls === 'rot' ? (shape.color || '#e63946') : 'white');
+        h.setAttribute('stroke', cls === 'rot' ? 'white' : (shape.color || '#e63946'));
+        h.setAttribute('stroke-width', 2);
+        h.setAttribute('class', 'drawing-handle');
+        h.style.pointerEvents = 'all';
+        h.style.cursor = cursor;
+        return h;
+      };
+      // Segment indicatif ancre → poignée de rotation
+      const seg = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      seg.setAttribute('x1', ax); seg.setAttribute('y1', ay);
+      seg.setAttribute('x2', ax + HD * Math.cos(bearing));
+      seg.setAttribute('y2', ay + HD * Math.sin(bearing));
+      seg.setAttribute('stroke', shape.color || '#e63946');
+      seg.setAttribute('stroke-width', 1.5);
+      seg.setAttribute('stroke-dasharray', '4,3');
+      seg.setAttribute('opacity', '0.6');
+      seg.style.pointerEvents = 'none';
+      hg.appendChild(seg);
+      // Poignée ROTATION (bout, distance fixe → toujours visible)
+      const rh = mk(ax + HD * Math.cos(bearing), ay + HD * Math.sin(bearing), 6, 'crosshair', 'rot');
+      rh.addEventListener('mousedown', e => { e.stopPropagation(); _startPlanAccessRotate(shape); });
+      hg.appendChild(rh);
+      // Poignée DÉPLACEMENT (ancre) → translate les 2 points, bearing conservé
+      const mh = mk(ax, ay, 7, 'move', 'mv');
+      mh.addEventListener('mousedown', e => { e.stopPropagation(); _startPlanShapeDrag(shape, e.clientX, e.clientY); });
+      hg.appendChild(mh);
+      svg.appendChild(hg);
+      return;
+    }
+
     const canRemove = shape.type === 'polygon' ? shape.points.length > 3 : shape.points.length > 2;
     const hg = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     hg.setAttribute('class', 'drawing-handles');
@@ -461,6 +532,29 @@ export function initDrawing(deps) {
     window.addEventListener('mouseup', onUp);
   }
 
+  function _startPlanAccessRotate(shape) {
+    const plan = getPlan();
+    const a = shape.points[0];
+    const ax = a.x * plan.scale + plan.offsetX;
+    const ay = a.y * plan.scale + plan.offsetY;
+    const svg = document.getElementById('plan-overlay');
+    const rect = svg.getBoundingClientRect();
+    const len = 20 / plan.scale;  // longueur du point directeur en espace image
+    const onMove = e => {
+      const ang = Math.atan2((e.clientY - rect.top) - ay, (e.clientX - rect.left) - ax);
+      shape.points[1] = { x: a.x + len * Math.cos(ang), y: a.y + len * Math.sin(ang) };
+      lastAccessBearing = ang;
+      onRefreshPlan();
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      onSave();
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
+
   function _startPlanHandleDrag(shape, idx, startX, startY) {
     const plan = getPlan();
     const origPt = { ...shape.points[idx] };
@@ -521,7 +615,7 @@ export function initDrawing(deps) {
       planPoints = [{ x: planX, y: planY }];
     } else {
       planPoints.push({ x: planX, y: planY });
-      if ((tool === 'arrow' || tool === 'circle') && planPoints.length >= 2) {
+      if ((tool === 'arrow' || tool === 'circle' || tool === 'access') && planPoints.length >= 2) {
         _finishPlanShape();
         return;
       }
@@ -619,9 +713,23 @@ export function initDrawing(deps) {
     const ctx = _ctx();
     const layer = ctx?.layers.find(l => l.id === activeLayerId);
     if (!layer) { cancelPlanDrawing(); return; }
+    if (tool === 'access') {
+      const a = pts[0], b = pts[1];
+      let bearing;
+      if (b && Math.hypot((b.x - a.x) * plan.scale, (b.y - a.y) * plan.scale) >= 6) {
+        bearing = Math.atan2(b.y - a.y, b.x - a.x);
+        lastAccessBearing = bearing;            // direction tracée → mémorisée
+      } else {
+        bearing = lastAccessBearing;            // double-clic / même point → bearing précédent
+      }
+      const len = 20 / plan.scale;
+      pts = [{ x: a.x, y: a.y },
+             { x: a.x + len * Math.cos(bearing), y: a.y + len * Math.sin(bearing) }];
+    }
     const shape = { id: uid(), type: tool, color, strokeWidth, dashed, points: pts };
     if (tool === 'polygon' || tool === 'circle') shape.fillOpacity = 0.15;
     if (tool === 'arrow') shape.doubleArrow = doubleArrow;
+    if (tool === 'access') { shape.iconKey = accessIconKey; shape.size = accessSize; }
     layer.shapes.push(shape);
     planDrawing = false;
     planPoints = [];
@@ -908,6 +1016,18 @@ export function initDrawing(deps) {
       _updateToolbarState();
     });
 
+    document.getElementById('drawing-access-icon').addEventListener('change', e => {
+      accessIconKey = e.target.value;
+      const s = _getSelectedShape();
+      if (s && s.type === 'access') { s.iconKey = accessIconKey; _refresh(); onSave(); }
+      _updateToolbarState();
+    });
+    document.getElementById('drawing-access-size').addEventListener('input', e => {
+      accessSize = Math.max(12, Math.min(240, parseInt(e.target.value) || 48));
+      const s = _getSelectedShape();
+      if (s && s.type === 'access') { s.size = accessSize; _refresh(); onSave(); }
+    });
+
     document.getElementById('btn-edit-text-shape').addEventListener('click', () => {
       const shape = _getSelectedShape();
       if (!shape || shape.type !== 'text') return;
@@ -974,6 +1094,21 @@ export function initDrawing(deps) {
       click(l); l.addTo(lg);
     } else if (shape.type === 'arrow' && ll.length >= 2) {
       _addMapArrow(shape, lg, layerId);
+    } else if (shape.type === 'access' && ll.length >= 1) {
+      const anchor = ll[0];
+      const dirLL = ll[1] || [anchor[0] + 0.0001, anchor[1]];
+      const pa = map.latLngToLayerPoint(anchor);
+      const pd = map.latLngToLayerPoint(dirLL);
+      const angle = Math.atan2(pd.y - pa.y, pd.x - pa.x) * 180 / Math.PI;
+      const w = shape.size || 48;
+      const h = w / accessArrowAspect(shape.iconKey);
+      const img = `<img src="${accessArrowSrc(shape.iconKey)}" width="${w}" height="${h}" `
+        + `style="transform:rotate(${angle}deg);transform-origin:center;display:block" alt="" draggable="false"/>`;
+      const l = L.marker(anchor, {
+        icon: L.divIcon({ className: '', html: img, iconSize: [w, h], iconAnchor: [w / 2, h / 2] }),
+        interactive: true,
+      });
+      click(l); l.addTo(lg);
     } else if (shape.type === 'text' && ll.length >= 1) {
       const baseFontSize = shape.fontSize || 14;
       const currentZoom  = map ? map.getZoom() : (shape.zoomRef ?? 15);
@@ -981,12 +1116,19 @@ export function initDrawing(deps) {
         ? Math.max(6, Math.round(baseFontSize * Math.pow(2, currentZoom - shape.zoomRef)))
         : baseFontSize;
       const ow  = shape.strokeWidth ?? 2;
-      const oc  = shape.outlineColor || '#000000';
-      const shadow = `0 0 ${ow * 1.5}px ${escapeAttr(oc)}, 0 0 ${ow * 3}px ${escapeAttr(oc)}`;
+      const oc  = escapeAttr(shape.outlineColor || '#000000');
+      const col = escapeAttr(shape.color || '#e63946');
+      const txt = escapeHtml(shape.text || '');
+      // Deux spans superposés : stroke (color:transparent + -webkit-text-stroke) puis fill par-dessus.
+      // Reproduit fidèlement strokeText+fillText du canvas, sans les artefacts du text-shadow.
+      const inner = ow > 0
+        ? `<span style="-webkit-text-stroke:${ow * 2}px ${oc};color:transparent">${txt}</span>` +
+          `<span style="position:absolute;left:0;top:0;color:${col}">${txt}</span>`
+        : `<span style="color:${col}">${txt}</span>`;
       const l = L.marker(ll[0], {
         icon: L.divIcon({
           className: '',
-          html: `<div class="map-drawing-text" style="color:${escapeAttr(shape.color || '#e63946')};font-size:${fs}px;text-shadow:${shadow}">${escapeHtml(shape.text || '')}</div>`,
+          html: `<div class="map-drawing-text" style="font-size:${fs}px;position:relative;display:inline-block">${inner}</div>`,
           iconSize: null, iconAnchor: [0, 0],
         }),
         interactive: true,
@@ -1037,6 +1179,54 @@ export function initDrawing(deps) {
     const layer = site?.mapDrawingLayers?.find(l => l.id === layerId);
     const shape = layer?.shapes.find(s => s.id === shapeId);
     if (!shape || !map) return;
+
+    if (shape.type === 'access') {
+      const redraw = () => {
+        const lg = mapLayerGroups[layerId];
+        if (lg) { lg.clearLayers(); layer.shapes.forEach(s => _addMapShape(s, lg, layerId)); }
+      };
+      const a0 = shape.points[0];
+      const dir0 = shape.points[1] || { lat: a0.lat, lon: a0.lon + 1e-4 };
+      const pa = map.latLngToLayerPoint([a0.lat, a0.lon]);
+      const pd = map.latLngToLayerPoint([dir0.lat, dir0.lon]);
+      const bearing = Math.atan2(pd.y - pa.y, pd.x - pa.x);
+      const HD = 44;  // distance écran fixe de la poignée de rotation
+      const rotLL = map.layerPointToLatLng(L.point(pa.x + HD * Math.cos(bearing), pa.y + HD * Math.sin(bearing)));
+
+      // Poignée DÉPLACEMENT (ancre) → translate les 2 points, bearing conservé
+      const mv = L.marker([a0.lat, a0.lon], {
+        draggable: true,
+        icon: L.divIcon({ className: 'drawing-handle-marker', html: '<div class="drawing-handle-dot"></div>', iconSize: [14, 14], iconAnchor: [7, 7] }),
+      }).addTo(map);
+      let orig = null;
+      mv.on('dragstart', () => { orig = shape.points.map(p => ({ ...p })); });
+      mv.on('drag', e => {
+        if (!orig) return;
+        const dLat = e.latlng.lat - orig[0].lat, dLon = e.latlng.lng - orig[0].lon;
+        shape.points = orig.map(p => ({ lat: p.lat + dLat, lon: p.lon + dLon }));
+        redraw();
+      });
+      mv.on('dragend', () => { onSave(); _selectMapShape(shapeId, layerId); });
+      mapHandleMarkers.push(mv);
+
+      // Poignée ROTATION (bout, distance fixe → toujours visible) → ancre conservée
+      const rt = L.marker(rotLL, {
+        draggable: true,
+        icon: L.divIcon({ className: 'drawing-handle-marker drawing-midpoint-marker', html: '<div class="drawing-midpoint-dot"></div>', iconSize: [12, 12], iconAnchor: [6, 6] }),
+      }).addTo(map);
+      rt.on('drag', e => {
+        const pAnchor = map.latLngToLayerPoint([shape.points[0].lat, shape.points[0].lon]);
+        const pc = map.latLngToLayerPoint(e.latlng);
+        const ang = Math.atan2(pc.y - pAnchor.y, pc.x - pAnchor.x);
+        const nd = map.layerPointToLatLng(L.point(pAnchor.x + 30 * Math.cos(ang), pAnchor.y + 30 * Math.sin(ang)));
+        shape.points[1] = { lat: nd.lat, lon: nd.lng };
+        lastAccessBearing = ang;
+        redraw();
+      });
+      rt.on('dragend', () => { onSave(); _selectMapShape(shapeId, layerId); });
+      mapHandleMarkers.push(rt);
+      return;
+    }
 
     const canRemove = shape.type === 'polygon' ? shape.points.length > 3 : shape.points.length > 2;
     const canHaveMidpoints = shape.type === 'polygon' || shape.type === 'polyline';
@@ -1141,6 +1331,7 @@ export function initDrawing(deps) {
       ...(t !== 'text' && t !== 'arrow' && t !== 'circle' ? [{ label: 'Terminer', primary: true, action: finishMapDrawing }] : []),
       { label: 'Annuler', primary: false, action: cancelMapDrawing },
     ]);
+    if (map.doubleClickZoom) map.doubleClickZoom.disable();
     map.on('mousemove', _onMapMousemove);
     map.on('dblclick', _onMapDblclick);
   }
@@ -1158,7 +1349,7 @@ export function initDrawing(deps) {
       return;
     }
     mapPoints.push({ lat: latlng.lat, lon: latlng.lng });
-    if ((mapCurrentTool === 'arrow' || mapCurrentTool === 'circle') && mapPoints.length >= 2) {
+    if ((mapCurrentTool === 'arrow' || mapCurrentTool === 'circle' || mapCurrentTool === 'access') && mapPoints.length >= 2) {
       finishMapDrawing();
       return;
     }
@@ -1188,6 +1379,9 @@ export function initDrawing(deps) {
   function _onMapDblclick(e) {
     if (!mapDrawing) return;
     L.DomEvent.stopPropagation(e);
+    // Accès : le placement est validé au 2e clic (les 2 clics du double-clic) ;
+    // le dblclic résiduel ne doit ni re-finir ni annuler l'outil ré-armé.
+    if (mapCurrentTool === 'access') return;
     finishMapDrawing();
   }
 
@@ -1206,13 +1400,30 @@ export function initDrawing(deps) {
     const site = getActiveSite();
     const layer = site?.mapDrawingLayers?.find(l => l.id === activeLayerId);
     if (!layer) { cancelMapDrawing(); return; }
+    if (mapCurrentTool === 'access') {
+      const a = pts[0], b = pts[1];
+      const pa = map.latLngToLayerPoint([a.lat, a.lon]);
+      let bearing;
+      if (b) {
+        const pb = map.latLngToLayerPoint([b.lat, b.lon]);
+        if (Math.hypot(pb.x - pa.x, pb.y - pa.y) >= 6) {
+          bearing = Math.atan2(pb.y - pa.y, pb.x - pa.x);
+          lastAccessBearing = bearing;
+        } else bearing = lastAccessBearing;
+      } else bearing = lastAccessBearing;
+      const dir = map.layerPointToLatLng(L.point(pa.x + 30 * Math.cos(bearing), pa.y + 30 * Math.sin(bearing)));
+      pts = [{ lat: a.lat, lon: a.lon }, { lat: dir.lat, lon: dir.lng }];
+    }
     const shape = { id: uid(), type: mapCurrentTool, color, strokeWidth, dashed, points: pts };
     if (mapCurrentTool === 'polygon' || mapCurrentTool === 'circle') shape.fillOpacity = 0.15;
     if (mapCurrentTool === 'arrow') shape.doubleArrow = doubleArrow;
+    if (mapCurrentTool === 'access') { shape.iconKey = accessIconKey; shape.size = accessSize; }
     layer.shapes.push(shape);
+    const reArmAccess = (mapCurrentTool === 'access' && tool === 'access');
     _cleanupMapDrawing();
     renderMapLayers();
     onSave();
+    if (reArmAccess) _startMapTool('access');  // enchaîne le placement d'une nouvelle flèche
   }
 
   function cancelMapDrawing() {
@@ -1225,6 +1436,7 @@ export function initDrawing(deps) {
     map.off('mousemove', _onMapMousemove);
     map.off('dblclick', _onMapDblclick);
     document.getElementById('map').classList.remove('map-cursor-crosshair');
+    if (map.doubleClickZoom) map.doubleClickZoom.enable();
     if (mapRubberBand) { mapRubberBand.remove(); mapRubberBand = null; }
     if (mapPreviewShape) { mapPreviewShape.remove(); mapPreviewShape = null; }
     mapDrawing = false;
